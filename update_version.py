@@ -153,10 +153,16 @@ def undo_update(plugin):
     for version_file in version_files:
         if version_file in staged:
             args = ["git", "restore", "--cached", version_file]
-            subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
+            try:
+                subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError:
+                pass
         if version_file in modified:
             args = ["git", "restore", version_file]
-            subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
+            try:
+                subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError:
+                pass
 
 def get_new_version(plugin, args):
     actual_version = get_plugin_version(plugin)
