@@ -102,10 +102,14 @@ def parse_args():
     version_parser.add_argument('-r', '--restore', help='Restore version', action='store_true')
 
     parser.add_argument('--dry-run', help='Dry run', action='store_true')
+
     return parser.parse_args()
 
 def main():
     args = parse_args()
+    if not any([args.patch, args.minor, args.major, args.version, args.restore]):
+        args.patch = True
+
     if args.plugin and args.plugin not in plugin_list:
         print(f'Plugin {args.plugin} not found')
         sys.exit(1)
@@ -120,6 +124,8 @@ def main():
     if args.automatic:
         for plugin in plugin_list:
             undo_update(plugin)
+            if args.restore:
+                continue
 
             newfiles_args = ["git", "ls-files", "--others", "--exclude-standard"]
             modified_args = ["git", "diff", "HEAD", "--name-only"]
