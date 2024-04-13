@@ -21,6 +21,7 @@ plugin_list = [
     'datoso_seed_sfc_enhancedcolors',
     'datoso_seed_sfc_msu1',
     'datoso_seed_sfc_speedhacks',
+    'datoso_seed_tdc',
     'datoso_seed_translatedenglish',
     'datoso_seed_vpinmame',
     # 'datoso_seed_whdload',
