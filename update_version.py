@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-import os
-import sys
 import subprocess
+import sys
 from argparse import ArgumentParser
-from pip._vendor.pygments.console import colorize
+from contextlib import suppress
+from pathlib import Path
 
 from config import PATH
-
+from pip._vendor.pygments.console import colorize
 
 plugin_list = [
     'datoso',
@@ -31,12 +31,12 @@ def get_datoso_version():
     get_plugin_version('datoso')
 
 def get_plugin_version(plugin):
-    plugin_path = os.path.join(PATH, plugin, 'src', plugin, '__init__.py')
-    with open(plugin_path, 'r') as f:
+    plugin_path = PATH / plugin / 'src' / plugin / '__init__.py'
+    with open(plugin_path) as f:
         for line in f.readlines():
             if line.strip().startswith('__version__'):
-                version = line.split('=')[1].strip().replace('"', '')
-                return version
+                return line.split('=')[1].strip().replace('"', '')
+    return None
 
 def get_plugin_versions():
     plugins = {}
@@ -48,10 +48,10 @@ def get_plugin_versions():
     return plugins
 
 def update_version(plugin, version, dry_run=False):
-    plugin_path = os.path.join(PATH, plugin, 'src', plugin)
+    plugin_path = PATH / plugin / 'src' / plugin
     file_data = []
-    file_path = os.path.join(plugin_path, '__init__.py')
-    with open(file_path, 'r') as f:
+    file_path = Path(plugin_path) / '__init__.py'
+    with open(file_path) as f:
         for line in f.readlines():
             if line.startswith('__version__'):
                 line = f'__version__ = "{version}"\n'
@@ -65,9 +65,10 @@ def update_version(plugin, version, dry_run=False):
             f.writelines(file_data)
 
 def update_dependencies(plugin, datoso_version, plugins, dry_run=False):
-    toml_path = os.path.join(PATH, plugin, 'pyproject.toml')
+    toml_path = PATH / plugin / 'pyproject.toml'
     file_data = []
-    with open(toml_path, 'r') as f:
+    # ruff: noqa: PLW2901
+    with open(toml_path) as f:
         for line in f.readlines():
             if not line.endswith('\n'):
                 line += '\n'
@@ -87,7 +88,7 @@ def update_dependencies(plugin, datoso_version, plugins, dry_run=False):
             f.writelines(file_data)
 
 def parse_args():
-    """ Parse arguments. """
+    """Parse arguments."""
     parser = ArgumentParser(description='Update the version of a plugin and seed')
 
     plugin_parser = parser.add_mutually_exclusive_group(required=True)
@@ -97,6 +98,7 @@ def parse_args():
 
     version_parser = parser.add_mutually_exclusive_group(required=True)
     version_parser.add_argument('-v', '--version', help='New version')
+    version_parser.add_argument('-d', '--dev', help='Developer version', action='store_true')
     version_parser.add_argument('-p', '--patch', help='Patch version', action='store_true')
     version_parser.add_argument('-m', '--minor', help='Minor version', action='store_true')
     version_parser.add_argument('-M', '--major', help='Major version', action='store_true')
@@ -128,23 +130,23 @@ def main():
             if args.restore:
                 continue
 
-            newfiles_args = ["git", "ls-files", "--others", "--exclude-standard"]
-            modified_args = ["git", "diff", "HEAD", "--name-only"]
+            newfiles_args = ['git', 'ls-files', '--others', '--exclude-standard']
+            modified_args = ['git', 'diff', 'HEAD', '--name-only']
+            # ruff: noqa: ERA001
             # args_updatedfiles = ["git", "ls-files", "--modified"]
             # args_stagedfiles = ["git", "diff", "--name-only", "--cached"]
-            newfiles = subprocess.check_output(newfiles_args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT).split('\n')
-            modified = subprocess.check_output(modified_args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT).split('\n')
+            newfiles = subprocess.check_output(newfiles_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
+            modified = subprocess.check_output(modified_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
             all_files = [x for x in newfiles + modified if x]
             if all_files:
                 print(f'Plugin {colorize("cyan",plugin)}')
                 print(colorize('yellow','Files:'))
                 print(all_files)
                 update_plugin(plugin)
+    elif args.restore:
+        undo_update(args.plugin)
     else:
-        if args.restore:
-            undo_update(args.plugin)
-        else:
-            update_plugin(args.plugin)
+        update_plugin(args.plugin)
 
     for plugin in plugin_list:
         if 'plugin' not in plugin or plugin == args.plugin:
@@ -152,24 +154,20 @@ def main():
 
 
 def undo_update(plugin):
-    staged_args = ["git", "diff", "--cached", "--name-only"]
-    modified_args = ["git", "diff", "HEAD", "--name-only"]
-    staged = subprocess.check_output(staged_args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT).split('\n')
-    modified = subprocess.check_output(modified_args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT).split('\n')
-    version_files = ['pyproject.toml', os.path.join('src', plugin, '__init__.py')]
+    staged_args = ['git', 'diff', '--cached', '--name-only']
+    modified_args = ['git', 'diff', 'HEAD', '--name-only']
+    staged = subprocess.check_output(staged_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
+    modified = subprocess.check_output(modified_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
+    version_files = ['pyproject.toml', Path('src') / plugin / '__init__.py']
     for version_file in version_files:
         if version_file in staged:
-            args = ["git", "restore", "--cached", version_file]
-            try:
-                subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError:
-                pass
+            args = ['git', 'restore', '--cached', version_file]
+            with suppress(subprocess.CalledProcessError):
+                subprocess.check_output(args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT)
         if version_file in modified:
-            args = ["git", "restore", version_file]
-            try:
-                subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError:
-                pass
+            args = ['git', 'restore', version_file]
+            with suppress(subprocess.CalledProcessError):
+                subprocess.check_output(args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT)
 
 def get_new_version(plugin, args):
     actual_version = get_plugin_version(plugin)
@@ -184,8 +182,8 @@ def get_new_version(plugin, args):
     return actual_version, version
 
 def check_if_update_needed(plugin):
-    args = ["git", "diff", "HEAD", "--name-only"]
-    output = subprocess.check_output(args, cwd=os.path.join(PATH, plugin), text=True, stderr=subprocess.STDOUT)
+    args = ['git', 'diff', 'HEAD', '--name-only']
+    output = subprocess.check_output(args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT)
     updated_files = []
     init = False
     for filename in output.split('\n'):
@@ -200,16 +198,14 @@ def get_update_patch(plugin):
     version = get_plugin_version(plugin)
     version = version.split('.')
     version[2] = str(int(version[2]) + 1)
-    version = '.'.join(version)
-    return version
+    return '.'.join(version)
 
 def get_update_minor(plugin):
     version = get_plugin_version(plugin)
     version = version.split('.')
     version[1] = str(int(version[1]) + 1)
     version[2] = '0'
-    version = '.'.join(version)
-    return version
+    return '.'.join(version)
 
 def get_update_major(plugin):
     version = get_plugin_version(plugin)
@@ -217,8 +213,7 @@ def get_update_major(plugin):
     version[0] = str(int(version[0]) + 1)
     version[1] = '0'
     version[2] = '0'
-    version = '.'.join(version)
-    return version
+    return '.'.join(version)
 
 
 if __name__ == '__main__':
