@@ -24,7 +24,7 @@ plugin_list = [
     'datoso_seed_tdc',
     'datoso_seed_translatedenglish',
     'datoso_seed_vpinmame',
-    # 'datoso_seed_whdload',
+    'datoso_seed_whdload',
 ]
 
 def get_datoso_version():
