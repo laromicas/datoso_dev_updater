@@ -8,6 +8,8 @@ from pathlib import Path
 from config import PATH
 from pip._vendor.pygments.console import colorize
 
+# ruff: noqa: E501, C901
+
 plugin_list = [
     'datoso',
     'datoso_plugin_internetarchive',
@@ -47,7 +49,7 @@ def get_plugin_versions():
         }
     return plugins
 
-def update_version(plugin, version, dry_run=False):
+def update_version(plugin, version, dry_run=None):
     plugin_path = PATH / plugin / 'src' / plugin
     file_data = []
     file_path = Path(plugin_path) / '__init__.py'
@@ -64,7 +66,7 @@ def update_version(plugin, version, dry_run=False):
         with open(file_path, 'w') as f:
             f.writelines(file_data)
 
-def update_dependencies(plugin, datoso_version, plugins, dry_run=False):
+def update_dependencies(plugin, datoso_version, plugins, dry_run=None):
     toml_path = PATH / plugin / 'pyproject.toml'
     file_data = []
     # ruff: noqa: PLW2901
