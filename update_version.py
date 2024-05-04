@@ -35,7 +35,7 @@ def get_plugin_version(plugin):
     with open(plugin_path) as f:
         for line in f.readlines():
             if line.strip().startswith('__version__'):
-                return line.split('=')[1].strip().replace('"', '')
+                return line.split('=')[1].strip().replace('"', '').replace("'", '')
     return None
 
 def get_plugin_versions():
@@ -54,7 +54,7 @@ def update_version(plugin, version, dry_run=False):
     with open(file_path) as f:
         for line in f.readlines():
             if line.startswith('__version__'):
-                line = f'__version__ = "{version}"\n'
+                line = f"__version__ = '{version}'\n"
             if not line.endswith('\n'):
                 line += '\n'
             file_data.append(line)
@@ -132,7 +132,7 @@ def main():
 
             newfiles_args = ['git', 'ls-files', '--others', '--exclude-standard']
             modified_args = ['git', 'diff', 'HEAD', '--name-only']
-            # ruff: noqa: ERA001
+            # ruff: noqa: ERA001, S603
             # args_updatedfiles = ["git", "ls-files", "--modified"]
             # args_stagedfiles = ["git", "diff", "--name-only", "--cached"]
             newfiles = subprocess.check_output(newfiles_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
