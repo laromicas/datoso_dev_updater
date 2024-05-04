@@ -94,6 +94,7 @@ def parse_args():
     plugin_parser = parser.add_mutually_exclusive_group(required=True)
     plugin_parser.add_argument('--plugin', help='Plugin Name')
     plugin_parser.add_argument('-a', '--automatic', help='Bump versions of all plugins', action='store_true')
+    plugin_parser.add_argument('-A', '--all', help='Bump versions of all plugins', action='store_true')
 
 
     version_parser = parser.add_mutually_exclusive_group(required=True)
@@ -124,7 +125,7 @@ def main():
 
     datoso_version = get_datoso_version()
 
-    if args.automatic:
+    if args.automatic or args.all:
         for plugin in plugin_list:
             undo_update(plugin)
             if args.restore:
@@ -138,7 +139,7 @@ def main():
             newfiles = subprocess.check_output(newfiles_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
             modified = subprocess.check_output(modified_args, cwd=(PATH / plugin), text=True, stderr=subprocess.STDOUT).split('\n')
             all_files = [x for x in newfiles + modified if x]
-            if all_files:
+            if all_files or args.all:
                 print(f'Plugin {colorize("cyan",plugin)}')
                 print(colorize('yellow','Files:'))
                 print(all_files)
