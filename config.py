@@ -1,3 +1,4 @@
+"""Configuration reader for datoso_dev_updater."""
 from configparser import ConfigParser
 from pathlib import Path
 

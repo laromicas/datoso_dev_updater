@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+"""Create a Release."""
 import sys
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 
 import requests
 from config import config
@@ -11,7 +12,7 @@ from plugins import get_plugin_version, plugin_list
 
 plugin_version_cache = {}
 
-def parse_args():
+def parse_args() -> Namespace:
     """Parse arguments."""
     parser = ArgumentParser(description='Create a Release')
     parser.add_argument('--token', help='GitHub Token', default=config.get('GITHUB', 'TOKEN', fallback=''),
@@ -36,8 +37,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_release_version(args, plugin):
-    """get latest version from GitHub"""
+def get_release_version(args: Namespace, plugin: str) -> Version:
+    """Get latest version from GitHub."""
     # global plugin_version_cache
     if plugin in plugin_version_cache:
         return plugin_version_cache[plugin]
@@ -54,8 +55,8 @@ def get_release_version(args, plugin):
     plugin_version_cache[plugin] = version
     return version
 
-def create_release(args, plugin):
-    """Create a new release"""
+def create_release(args: Namespace, plugin: str) -> dict:
+    """Create a new release."""
     url = f'https://api.github.com/repos/{args.owner}/{plugin}/releases'
     headers = {
         'Accept': 'application/vnd.github+json',
@@ -80,8 +81,8 @@ def create_release(args, plugin):
     response.raise_for_status()
     return response.json()
 
-def is_new_version_valid(args, plugin):
-    """Validate version"""
+def is_new_version_valid(args: Namespace, plugin: Version) -> bool:
+    """Validate version."""
     new_version = get_plugin_version(plugin)
     current_version = get_release_version(args, plugin)
     # if new_version <= current_version:

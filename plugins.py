@@ -1,3 +1,4 @@
+"""Plugin version checker."""
 from config import PATH
 from packaging.version import Version
 
@@ -21,7 +22,8 @@ plugin_list = [
 ]
 
 
-def get_plugin_version(plugin):
+def get_plugin_version(plugin: str) -> Version | None:
+    """Get the version of a plugin."""
     plugin_path = PATH / plugin / 'src' / plugin / '__init__.py'
     with open(plugin_path) as f:
         for line in f.readlines():
@@ -29,7 +31,8 @@ def get_plugin_version(plugin):
                 return Version(line.split('=')[1].strip().replace('"', '').replace("'", ''))
     return None
 
-def get_plugin_versions():
+def get_plugin_versions() -> dict:
+    """Get the versions of all plugins."""
     plugins = {}
     for plugin in plugin_list:
         plugins[plugin] = {
