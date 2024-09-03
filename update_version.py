@@ -46,7 +46,7 @@ def update_version(plugin: str, version: str, *, dry_run: bool=False) -> None:
     file_data = []
     file_path = Path(plugin_path) / '__init__.py'
     with open(file_path) as f:
-        for line in f.readlines():
+        for line in f:
             if line.startswith('__version__'):
                 line = f"__version__ = '{version}'\n"
             if not line.endswith('\n'):
@@ -58,13 +58,13 @@ def update_version(plugin: str, version: str, *, dry_run: bool=False) -> None:
         with open(file_path, 'w') as f:
             f.writelines(file_data)
 
-def update_dependencies(plugin: str, datoso_version: str, plugins: list[str], *, dry_run: bool=False) -> None:
+def update_dependencies(plugin_path: str, datoso_version: str, plugins: list[str], *, dry_run: bool=False) -> None:
     """Update the dependencies of a plugin."""
-    toml_path = PATH / plugin / 'pyproject.toml'
+    toml_path = PATH / plugin_path / 'pyproject.toml'
     file_data = []
     # ruff: noqa: PLW2901
     with open(toml_path) as f:
-        for line in f.readlines():
+        for line in f:
             if not line.endswith('\n'):
                 line += '\n'
             if 'datoso>' in line.strip():

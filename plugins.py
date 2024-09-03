@@ -26,7 +26,7 @@ def get_plugin_version(plugin: str) -> Version | None:
     """Get the version of a plugin."""
     plugin_path = PATH / plugin / 'src' / plugin / '__init__.py'
     with open(plugin_path) as f:
-        for line in f.readlines():
+        for line in f:
             if line.strip().startswith('__version__'):
                 return Version(line.split('=')[1].strip().replace('"', '').replace("'", ''))
     return None
