@@ -132,14 +132,14 @@ def check_if_update_needed(plugin: str) -> None:
 def get_update_patch(plugin: str) -> Version:
     """Get the new patch version."""
     version = get_plugin_version(plugin)
-    version = version.split('.')
+    version = str(version).split('.')
     version[2] = str(int(version[2]) + 1)
     return Version('.'.join(version))
 
 def get_update_minor(plugin: str) -> Version:
     """Get the new minor version."""
     version = get_plugin_version(plugin)
-    version = version.split('.')
+    version = str(version).split('.')
     version[1] = str(int(version[1]) + 1)
     version[2] = '0'
     return Version('.'.join(version))
@@ -147,7 +147,7 @@ def get_update_minor(plugin: str) -> Version:
 def get_update_major(plugin: str) -> Version:
     """Get the new major version."""
     version = get_plugin_version(plugin)
-    version = version.split('.')
+    version = str(version).split('.')
     version[0] = str(int(version[0]) + 1)
     version[1] = '0'
     version[2] = '0'
