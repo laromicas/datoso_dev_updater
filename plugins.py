@@ -1,6 +1,7 @@
 """Plugin version checker."""
-from config import PATH
 from packaging.version import Version
+
+from config import PATH
 
 plugin_list = [
     'datoso',
@@ -21,6 +22,10 @@ plugin_list = [
     'datoso_seed_whdload',
 ]
 
+def get_datoso_version() -> Version | None:
+    """Get the version of datoso."""
+    return get_plugin_version('datoso')
+
 
 def get_plugin_version(plugin: str) -> Version | None:
     """Get the version of a plugin."""
@@ -40,3 +45,7 @@ def get_plugin_versions() -> dict:
             'version': get_plugin_version(plugin),
         }
     return plugins
+
+def get_datoso_version() -> Version | None:
+    """Get the version of datoso."""
+    return get_plugin_version('datoso')

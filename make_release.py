@@ -4,7 +4,7 @@ import sys
 from argparse import ArgumentParser, Namespace
 
 import requests
-from config import config
+from lib.config import config
 from packaging.version import Version
 from plugins import get_plugin_version, plugin_list
 
