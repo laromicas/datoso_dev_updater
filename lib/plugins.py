@@ -15,6 +15,7 @@ plugin_list = [
     'datoso_plugin_internetarchive',
     'datoso_seed_base',
     'datoso_seed_enhanced',
+    'datoso_seed_eggman',
     'datoso_seed_fbneo',
     'datoso_seed_nointro',
     'datoso_seed_pleasuredome',

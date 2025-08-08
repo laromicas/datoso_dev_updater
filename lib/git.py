@@ -66,10 +66,21 @@ def get_branch(plugin: str) -> str:
     """Get the current branch."""
     return execute(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=(PATH / plugin)).strip()
 
+def branch_exists(plugin: str, branch: str) -> bool:
+    """Check if a branch exists."""
+    try:
+        execute(['git', 'show-ref', '--verify', f'refs/heads/{branch}'], cwd=(PATH / plugin))
+    except subprocess.CalledProcessError:
+        return False
+    else:
+        return True
+
+
 def create_branch(plugin: str, branch: str, *, dry_run: bool) -> None:
     """Create a branch."""
     execute(['git', 'checkout', 'master'], cwd=(PATH / plugin), safe=False, dry_run=dry_run)
-    delete_branch(plugin, branch, dry_run=dry_run)  # Ensure branch is deleted if it exists
+    if check_if_branch_exists(plugin, branch):
+        delete_branch(plugin, branch, dry_run=dry_run)  # Ensure branch is deleted if it exists
     execute(['git', 'checkout', '-b', branch], cwd=(PATH / plugin), safe=False, dry_run=dry_run)
 
 def switch_branch(plugin: str, branch: str, *, dry_run: bool = False) -> None:
