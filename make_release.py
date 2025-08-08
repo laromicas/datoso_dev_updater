@@ -6,7 +6,8 @@ from argparse import ArgumentParser, Namespace
 import requests
 from lib.config import config
 from packaging.version import Version
-from plugins import get_plugin_version, plugin_list
+
+from datoso_dev_updater.lib.plugins import get_plugin_version, plugin_list
 
 # ruff: noqa: ERA001, E501
 

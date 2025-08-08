@@ -4,8 +4,6 @@ import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
-from lib import git
-from lib.config import PATH
 from lib.git import (
     add_files_to_stage,
     check_if_branch_exists,
@@ -45,8 +43,6 @@ def parse_args() -> Namespace:
 def main() -> None:
     """Run the main function."""
     args = parse_args()
-    if git.dry_run:
-        args.dry_run = True
 
     #temporal while testing
     args.dry_run = True

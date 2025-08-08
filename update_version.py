@@ -1,93 +1,41 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """Update the version of datoso plugins and seeds."""
-import sys
-from argparse import ArgumentParser, Namespace
-from pathlib import Path
 
-from lib import git
-from lib.config import PATH
-from lib.git import get_modified_files, get_new_files, undo_update
+import typer
+from lib.git import create_branch, get_modified_files, get_new_files, undo_update
+from lib.plugins import get_datoso_version, get_plugin_version, plugin_list, update_dependencies, update_version
 from packaging.version import Version
-from pip._vendor.pygments.console import colorize
-from plugins import get_datoso_version, get_plugin_version, plugin_list
+from rich.console import Console
+from typing_extensions import Annotated
 
-# ruff: noqa: E501, C901
+# ruff: noqa: E501, C901, FBT002
 
-def parse_args() -> Namespace:
-    """Parse arguments."""
-    parser = ArgumentParser(description='Update the version of a plugin and seed')
+app = typer.Typer()
+console = Console()
 
-    plugin_parser = parser.add_mutually_exclusive_group(required=True)
-    plugin_parser.add_argument('--plugin', help='Plugin Name')
-    plugin_parser.add_argument('-a', '--automatic', help='Bump versions of all plugins', action='store_true')
-    plugin_parser.add_argument('-A', '--all', help='Bump versions of all plugins', action='store_true')
-
-    version_parser = parser.add_mutually_exclusive_group(required=True)
-    version_parser.add_argument('-v', '--version', help='New version')
-    version_parser.add_argument('-d', '--dev', help='Developer version', action='store_true')
-    version_parser.add_argument('-p', '--patch', help='Patch version', action='store_true')
-    version_parser.add_argument('-m', '--minor', help='Minor version', action='store_true')
-    version_parser.add_argument('-M', '--major', help='Major version', action='store_true')
-    version_parser.add_argument('-r', '--restore', help='Restore version', action='store_true')
-
-    parser.add_argument('--dry-run', help='Dry run', action='store_true')
-
-    return parser.parse_args()
-
-def update_version(plugin: str, version: str, *, dry_run: bool=False) -> None:
-    """Update the version of a plugin."""
-    plugin_path = PATH / plugin / 'src' / plugin
-    file_data = []
-    file_path = Path(plugin_path) / '__init__.py'
-    with open(file_path) as f:
-        for line in f:
-            if line.startswith('__version__'):
-                line = f"__version__ = '{version}'\n"
-            if not line.endswith('\n'):
-                line += '\n'
-            file_data.append(line)
-    [print(line, end='') for line in file_data]
-    print()
-    if not dry_run:
-        with open(file_path, 'w') as f:
-            f.writelines(file_data)
-
-def update_dependencies(plugin_path: str, datoso_version: str, plugins: list[str], *, dry_run: bool=False) -> None:
-    """Update the dependencies of a plugin."""
-    toml_path = PATH / plugin_path / 'pyproject.toml'
-    file_data = []
-    # ruff: noqa: PLW2901
-    with open(toml_path) as f:
-        for line in f:
-            if not line.endswith('\n'):
-                line += '\n'
-            if 'datoso>' in line.strip():
-                line = f'    "datoso>={datoso_version}",\n'
-            for plugin in plugins:
-                plugin_name = plugin.replace('_','-')
-                if line.strip().startswith(f'"{plugin_name}>'):
-                    line = f'    "{plugin_name}>={get_plugin_version(plugin)}",\n'
-                package = plugin_name.split('-')[-1]
-                if package != 'datoso' and line.strip().startswith(f'{package} ='):
-                    line = f'{package} = [ "{plugin_name}>={get_plugin_version(plugin)}" ]\n'
-            file_data.append(line)
-    # [print(line, end='') for line in file_data]
-    if not dry_run:
-        with open(toml_path, 'w') as f:
-            f.writelines(file_data)
-
-def get_new_version(plugin: str, args: Namespace) -> tuple[str, str]:
+def get_new_version(plugin: str, *, patch: bool = False, minor: bool = False, major: bool = False, dev: bool = False, version: str | None = None) -> tuple[str, str]:
     """Get the new version of a plugin."""
     actual_version = get_plugin_version(plugin)
-    if args.patch:
-        version = get_update_patch(plugin)
-    elif args.minor:
-        version = get_update_minor(plugin)
-    elif args.major:
-        version = get_update_major(plugin)
+    if dev:
+        version_val = get_update_dev(plugin)
+    elif patch:
+        version_val = get_update_patch(plugin)
+    elif minor:
+        version_val = get_update_minor(plugin)
+    elif major:
+        version_val = get_update_major(plugin)
     else:
-        version = args.version
-    return actual_version, version
+        version_val = version
+    return actual_version, version_val
+
+def get_update_dev(plugin: str) -> Version:
+    """Get the new dev version."""
+    version = get_plugin_version(plugin)
+    version = str(version).split('.')
+    if 'dev' in version[2]:
+        version[2] = version[2].split('dev')[0]
+    version[2] = str(int(version[2]) + 1) + '.dev'
+    return Version('.'.join(version))
 
 def get_update_patch(plugin: str) -> Version:
     """Get the new patch version."""
@@ -113,48 +61,62 @@ def get_update_major(plugin: str) -> Version:
     version[2] = '0'
     return Version('.'.join(version))
 
-def main() -> None:
-    """Run the main function."""
-    args = parse_args()
-    if git.dry_run:
-        args.dry_run = True
-    if not any([args.patch, args.minor, args.major, args.version, args.restore]):
-        args.patch = True
 
-    if args.plugin and args.plugin not in plugin_list:
-        print(f'Plugin {args.plugin} not found')
-        sys.exit(1)
+@app.command()
+def main(
+    plugin: str = typer.Option(None, help='Plugin Name'),
+    version: Annotated[str, typer.Option('--version', '-v', help='New version')] = None,
+    automatic: Annotated[bool, typer.Option('--automatic', '-a', help='Bump versions of all plugins with changes')] = False,
+    all_: Annotated[bool, typer.Option('--all', '-A', help='Bump versions of all plugins')] = False,
+    dev: Annotated[bool, typer.Option('--dev', '-d', help='Developer version (Attach .dev to version)')] = False,
+    patch: Annotated[bool, typer.Option('--patch', '-p', help='Patch version (Changes x.y.z to x.y.z+1)')] = False,
+    minor: Annotated[bool, typer.Option('--minor', '-m', help='Minor version (Changes x.y.z to x.y+1.0)')] = False,
+    major: Annotated[bool, typer.Option('--major', '-M', help='Major version (Changes x.y.z to x+1.0.0)')] = False,
+    restore: Annotated[bool, typer.Option('--restore', '-r', help='Restore version (Changes version to original)')] = False,
+    dry_run: Annotated[bool, typer.Option('--dry-run', help='Dry run')] = False,
+):
+    """Run the main function."""
+
+    if not any([patch, minor, major, version, restore]):
+        patch = True
+
+    if plugin and plugin not in plugin_list:
+        console.print(f'[red]Plugin {plugin} not found[/red]')
+        raise typer.Exit(1)
 
     def update_plugin(plugin: str) -> None:
-        actual_version, new_version = get_new_version(plugin, args)
-        update_version(plugin, new_version, dry_run=args.dry_run)
-        print(colorize('green',f'Updated {plugin} from {actual_version} to {new_version}'))
+        actual_version, new_version = get_new_version(plugin, patch=patch, minor=minor, major=major, version=version, dev=dev)
+        update_version(plugin, new_version, dry_run=dry_run)
+        console.print(f'[green]Updated version files [cyan]{plugin}[/cyan] from [blue]{actual_version}[/blue] to [magenta]{new_version}[/magenta][/green]')
+        #create a branch for the update with branch name = new version
+        create_branch(plugin, str(new_version), dry_run=dry_run)
+        console.print(f'[green]Created branch [cyan]{plugin}[/cyan] for version [magenta]{new_version}[/magenta][/green]')
 
     datoso_version = get_datoso_version()
 
-    if args.automatic or args.all:
-        for plugin in plugin_list:
-            undo_update(plugin)
-            if args.restore:
+    if automatic or all_:
+        for plg in plugin_list:
+            undo_update(plg)
+            if restore:
                 continue
 
-            newfiles = get_new_files(plugin)
-            modified = get_modified_files(plugin)
+            newfiles = get_new_files(plg)
+            modified = get_modified_files(plg)
             all_files = [x for x in newfiles + modified if x]
-            if all_files or args.all:
-                print(f'Plugin {colorize("cyan",plugin)}')
-                print(colorize('yellow','Files:'))
-                print(all_files)
-                update_plugin(plugin)
-    elif args.restore:
-        undo_update(args.plugin)
+            if all_files or all_:
+                console.print(f'Plugin [cyan]{plg}[/cyan]')
+                console.print('[yellow]Files:[/yellow]')
+                console.print(all_files)
+                update_plugin(plg)
+    elif restore:
+        undo_update(plugin)
     else:
-        update_plugin(args.plugin)
+        update_plugin(plugin)
 
-    for plugin in plugin_list:
-        if 'plugin' not in plugin or plugin == args.plugin:
-            update_dependencies(plugin, datoso_version, plugin_list, dry_run=args.dry_run)
+    for plg in plugin_list:
+        if 'plugin' not in plg or plg == plugin:
+            update_dependencies(plg, datoso_version, plugin_list, dry_run=dry_run)
 
 
 if __name__ == '__main__':
-    main()
+    app()
