@@ -74,6 +74,7 @@ def main(
     major: Annotated[bool, typer.Option('--major', '-M', help='Major version (Changes x.y.z to x+1.0.0)')] = False,
     restore: Annotated[bool, typer.Option('--restore', '-r', help='Restore version (Changes version to original)')] = False,
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Dry run')] = False,
+    list_versions: Annotated[bool, typer.Option('--list', help='List current versions')] = False,
 ):
     """Run the main function."""
 
@@ -83,6 +84,13 @@ def main(
     if plugin and plugin not in plugin_list:
         console.print(f'[red]Plugin {plugin} not found[/red]')
         raise typer.Exit(1)
+
+    if list_versions:
+        console.print('[yellow]Current plugin versions:[/yellow]')
+        for plg in plugin_list:
+            ver = get_plugin_version(plg)
+            console.print(f'[cyan]{plg}[/cyan]: [magenta]{ver}[/magenta]')
+        raise typer.Exit(0)
 
     def update_plugin(plugin: str) -> None:
         actual_version, new_version = get_new_version(plugin, patch=patch, minor=minor, major=major, version=version, dev=dev)
