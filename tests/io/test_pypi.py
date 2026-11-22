@@ -45,3 +45,11 @@ def test_other_http_errors_propagate_as_oserror():
 
 def test_custom_base_url():
     assert PyPI(base_url='http://localhost:8080/pypi/').url_for('x y') == 'http://localhost:8080/pypi/x%20y/json'
+
+
+def test_has_version():
+    opener = RecordingOpener({'info': {'version': '1.1.0'}})
+    assert PyPI(opener=opener).has_version('datoso-seed-tdc', '1.1.0') is True
+    assert opener.requests[0][0].full_url == 'https://pypi.org/pypi/datoso-seed-tdc/1.1.0/json'
+    err = urllib.error.HTTPError('u', 404, 'Not Found', {}, None)
+    assert PyPI(opener=RecordingOpener(error=err)).has_version('datoso-seed-tdc', '1.1.0') is False

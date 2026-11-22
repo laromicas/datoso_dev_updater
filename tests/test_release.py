@@ -9,11 +9,19 @@ import pytest
 from packaging.version import Version
 
 from datoso_dev.planner import plan_release
-from datoso_dev.release import Outcome, open_release_pr, open_release_prs
+from datoso_dev.release import (
+    Action,
+    Outcome,
+    open_release_pr,
+    probe_release,
+    publish_release,
+    run_releases,
+    wait_for_pypi,
+)
 from datoso_dev.state import PackageState
 from datoso_dev.workspace import discover
 
-from .fakes import FakeGh, FakeGit, FakeRepo
+from .fakes import FakeGh, FakeGit, FakePyPI, FakeRepo
 
 V = Version
 REDUMP = 'datoso_seed_redump'
@@ -84,6 +92,20 @@ def test_existing_pr_means_done(redump, item):
     assert git.called('create_branch') == []
 
 
+def test_merged_pr_means_tag_it_not_a_new_pr(redump, item):
+    """The release PR was merged but not tagged yet: re-running must not open a duplicate from the stale branch."""
+    pushed = (redump.path / INIT).read_text().replace("'1.0.1'", "'1.0.2'")
+    git, gh = fakes(redump, files={('origin/release/v1.0.2', INIT): pushed})
+    gh.merged_prs[(redump.path, 'release/v1.0.2')] = 'https://github.com/owner/datoso_seed_redump/pull/4'
+    gh.open_prs[(redump.path, 'release/v1.0.2')] = 'https://github.com/owner/datoso_seed_redump/pull/5'  # duplicate
+    result = open_release_pr(item, redump, git, gh, since='v1.0.1')
+    assert result.outcome is Outcome.MERGED
+    assert result.pr_url.endswith('/pull/4')
+    assert 'tag v1.0.2' in result.detail
+    assert gh.created == []
+    assert git.called('create_branch') == []
+
+
 def test_branch_already_pushed_resumes_at_pr(redump, item):
     """A previous run pushed the bump but failed to open the PR: don't commit or push again."""
     pushed = (redump.path / INIT).read_text().replace("'1.0.1'", "'1.0.2'")
@@ -127,13 +149,149 @@ def test_gh_failure_after_push_is_resumable(redump, item):
     assert git.pushes  # the branch is on origin, so a re-run resumes at the PR
 
 
-def test_open_release_prs_runs_only_runnable_items(ws, redump):
+def test_run_releases_runs_only_runnable_items(ws, redump):
     states = released_states(ws)
     plan = plan_release(ws, states, {'datoso': V('1.2.0'), REDUMP: V('1.0.2')})
     git = FakeGit({pkg.path: FakeRepo() for pkg in ws.packages.values()})
     gh = FakeGh()
+    probes = {item.name: probe_release(item, ws.packages[item.name], git, gh) for item in plan.runnable_now}
     progress: list[tuple[str, str]] = []
-    results = open_release_prs(plan, ws, states, git, gh, on_progress=lambda name, msg: progress.append((name, msg)))
+    results = run_releases(
+        plan, probes, ws, states, git, gh, FakePyPI(), on_progress=lambda name, msg: progress.append((name, msg))
+    )
     assert [(r.name, r.outcome) for r in results] == [('datoso', Outcome.OPENED)]
     assert [pr['repo'].name for pr in gh.created] == ['datoso']
     assert ('datoso', 'PR opened') in progress
+
+
+# --------------------------------------------------------------------------- probe: what is left to do
+
+
+BRANCH = 'release/v1.0.2'
+MERGED_URL = 'https://github.com/owner/datoso_seed_redump/pull/4'
+
+
+def test_probe_no_pr_means_open_one(redump, item):
+    git, gh = fakes(redump)
+    assert probe_release(item, redump, git, gh).action is Action.OPEN_PR
+    assert git.called('fetch')
+
+
+def test_probe_open_pr_means_merge_it_first(redump, item):
+    git, gh = fakes(redump)
+    gh.open_prs[(redump.path, BRANCH)] = 'https://github.com/owner/datoso_seed_redump/pull/9'
+    probe = probe_release(item, redump, git, gh)
+    assert (probe.action, probe.pr_url) == (Action.WAIT_MERGE, 'https://github.com/owner/datoso_seed_redump/pull/9')
+
+
+def test_probe_merged_pr_means_publish(redump, item):
+    git, gh = fakes(redump)
+    gh.merged_prs[(redump.path, BRANCH)] = MERGED_URL
+    gh.open_prs[(redump.path, BRANCH)] = 'https://github.com/owner/datoso_seed_redump/pull/5'  # a stale duplicate
+    probe = probe_release(item, redump, git, gh)
+    assert (probe.action, probe.pr_url) == (Action.PUBLISH, MERGED_URL)
+
+
+def test_probe_existing_release_means_done(redump, item):
+    git, gh = fakes(redump)
+    gh.releases[(redump.path, 'v1.0.2')] = 'https://github.com/owner/datoso_seed_redump/releases/tag/v1.0.2'
+    assert probe_release(item, redump, git, gh).action is Action.RELEASED
+
+
+def test_probe_error(redump, item):
+    git, gh = fakes(redump, fail_on={'fetch'})
+    probe = probe_release(item, redump, git, gh)
+    assert probe.action is Action.ERROR
+    assert 'fetch failed' in probe.detail
+
+
+# --------------------------------------------------------------------------- publish: tag + GitHub Release + PyPI
+
+
+def no_sleep(_seconds: float) -> None:
+    pass
+
+
+def test_publish_tags_the_merge_commit_and_waits_for_pypi(redump, item):
+    _, gh = fakes(redump)
+    pypi = FakePyPI()
+    pypi.appears_after[('datoso-seed-redump', '1.0.2')] = 2
+    result = publish_release(item, redump, gh, pypi, pr_url=MERGED_URL, since='v1.0.1', sleep=no_sleep)
+    assert result.outcome is Outcome.PUBLISHED
+    assert result.pr_url == 'https://github.com/owner/datoso_seed_redump/releases/tag/v1.0.2'
+    [created] = gh.releases_created
+    assert created == {
+        'repo': redump.path, 'tag': 'v1.0.2', 'target': 'sha-of-4', 'title': 'v1.0.2', 'notes_start_tag': 'v1.0.1',
+        'prerelease': False,
+    }  # fmt: skip
+    assert len(pypi.polls) == 3
+    assert 'on PyPI' in result.detail
+
+
+def test_publish_pypi_timeout_is_reported_not_failed(redump, item):
+    _, gh = fakes(redump)
+    clock = iter(range(0, 10_000, 30))
+    result = publish_release(
+        item, redump, gh, FakePyPI(), pr_url=MERGED_URL, since='v1.0.1', sleep=no_sleep,
+        clock=lambda: next(clock), timeout=120,
+    )  # fmt: skip
+    assert result.outcome is Outcome.PYPI_PENDING
+    assert 'publish workflow' in result.detail
+
+
+def test_publish_without_wait_and_prerelease(ws, redump):
+    _, gh = fakes(redump)
+    item = plan_release(ws, released_states(ws), {REDUMP: V('1.1.0rc1')}).item(REDUMP)
+    pypi = FakePyPI()
+    result = publish_release(item, redump, gh, pypi, pr_url=MERGED_URL, since='v1.0.1', wait=False)
+    assert result.outcome is Outcome.PUBLISHED
+    assert gh.releases_created[0]['prerelease'] is True
+    assert pypi.polls == []
+
+
+def test_publish_github_only_package_does_not_wait(ws, redump):
+    _, gh = fakes(redump)
+    pkg = replace(redump, pypi=False)
+    pypi = FakePyPI()
+    assert publish_release(item_for(ws), pkg, gh, pypi, pr_url=MERGED_URL, since=None).outcome is Outcome.PUBLISHED
+    assert pypi.polls == []
+    assert gh.releases_created[0]['notes_start_tag'] is None
+
+
+def item_for(ws):
+    return plan_release(ws, released_states(ws), {REDUMP: V('1.0.2')}).item(REDUMP)
+
+
+def test_publish_error(redump, item):
+    gh = FakeGh(fail=True)
+    result = publish_release(item, redump, gh, FakePyPI(), pr_url=MERGED_URL, since='v1.0.1')
+    assert result.outcome is Outcome.ERROR
+
+
+def test_wait_for_pypi_handles_network_errors():
+    class Flaky(FakePyPI):
+        def has_version(self, dist_name, version):
+            self.polls.append((dist_name, version))
+            if len(self.polls) == 1:
+                msg = 'timeout'
+                raise OSError(msg)
+            return True
+
+    assert wait_for_pypi(Flaky(), 'x', '1.0.0', sleep=no_sleep) is True
+
+
+def test_run_releases_dispatches_on_the_probe(ws, redump, item):
+    states = released_states(ws)
+    plan = plan_release(ws, states, {REDUMP: V('1.0.2'), 'datoso_seed_enhanced': V('1.1.1')})
+    git = FakeGit({pkg.path: FakeRepo() for pkg in ws.packages.values()})
+    gh = FakeGh()
+    probes = {
+        REDUMP: probe_release(item, redump, git, gh),
+        'datoso_seed_enhanced': probe_release(
+            plan.item('datoso_seed_enhanced'), ws.packages['datoso_seed_enhanced'], git, gh
+        ),
+    }
+    gh.merged_prs[(redump.path, BRANCH)] = MERGED_URL
+    probes[REDUMP] = probe_release(item, redump, git, gh)
+    results = run_releases(plan, probes, ws, states, git, gh, FakePyPI(), wait=False)
+    assert {r.name: r.outcome for r in results} == {REDUMP: Outcome.PUBLISHED, 'datoso_seed_enhanced': Outcome.OPENED}

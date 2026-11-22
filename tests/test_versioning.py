@@ -89,3 +89,9 @@ def test_choices_with_pre_label():
 def test_choice_label():
     [patch, *_] = bump_choices(V('1.1.1'), released=V('1.1.1'))
     assert patch.label == 'patch (1.1.2)'
+
+
+def test_choices_never_go_below_the_bumped_version():
+    """tdc: __version__ 1.1.0, released 1.0.0. "patch" from the release (1.0.1) would be a downgrade: not offered."""
+    choices = bump_choices(V('1.1.0'), released=V('1.0.0'))
+    assert [(c.part, c.version) for c in choices] == [(Part.KEEP, V('1.1.0')), (Part.MAJOR, V('2.0.0'))]

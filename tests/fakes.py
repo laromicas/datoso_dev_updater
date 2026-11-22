@@ -99,6 +99,15 @@ class FakePyPI:
     def __init__(self, versions: dict[str, str | None] | None = None) -> None:
         self.versions = versions or {}
         self.queried: list[str] = []
+        self.appears_after: dict[tuple[str, str], int] = {}  # (dist, version) -> polls before it is listed
+        self.polls: list[tuple[str, str]] = []
+
+    def has_version(self, dist_name: str, version: str) -> bool:
+        self.polls.append((dist_name, version))
+        key = (dist_name, version)
+        if key in self.appears_after:
+            return self.polls.count(key) > self.appears_after[key]
+        return self.versions.get(dist_name) == version
 
     def latest_version(self, dist_name: str) -> str | None:
         self.queried.append(dist_name)
@@ -110,11 +119,14 @@ class FakeGh:
 
     def __init__(self, open_prs: dict[tuple[Path, str], str] | None = None, *, fail: bool = False) -> None:
         self.open_prs = open_prs or {}
+        self.merged_prs: dict[tuple[Path, str], str] = {}
+        self.releases: dict[tuple[Path, str], str] = {}  # (repo, tag) -> release URL
+        self.releases_created: list[dict[str, object]] = []
         self.created: list[dict[str, object]] = []
         self.fail = fail
 
-    def pr_for_branch(self, repo: Path, head: str) -> str | None:
-        return self.open_prs.get((repo, head))
+    def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
+        return (self.open_prs if state == 'open' else self.merged_prs).get((repo, head))
 
     def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
         if self.fail:
@@ -123,6 +135,33 @@ class FakeGh:
         url = f'https://github.com/owner/{repo.name}/pull/{len(self.created) + 1}'
         self.created.append({'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url})
         self.open_prs[(repo, head)] = url
+        return url
+
+    def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
+        return f'sha-of-{pr_url.rsplit("/", 1)[-1]}'
+
+    def release_url(self, repo: Path, tag: str) -> str | None:
+        return self.releases.get((repo, tag))
+
+    def release_create(  # noqa: PLR0913
+        self,
+        repo: Path,
+        *,
+        tag: str,
+        target: str,
+        title: str,
+        notes_start_tag: str | None = None,
+        prerelease: bool = False,
+    ) -> str:
+        if self.fail:
+            msg = f'gh release create failed in {repo}'
+            raise GhError(msg)
+        url = f'https://github.com/owner/{repo.name}/releases/tag/{tag}'
+        self.releases_created.append(
+            {'repo': repo, 'tag': tag, 'target': target, 'title': title, 'notes_start_tag': notes_start_tag,
+             'prerelease': prerelease}
+        )  # fmt: skip
+        self.releases[(repo, tag)] = url
         return url
 
 

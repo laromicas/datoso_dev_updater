@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -9,8 +11,8 @@ from rich.text import Text
 from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.planner import Plan
 from datoso_dev.policy import FloorChange
+from datoso_dev.release import Action, Probe, ReleaseResult
 from datoso_dev.release import Outcome as ReleaseOutcome
-from datoso_dev.release import ReleaseResult
 from datoso_dev.state import PackageState, Status
 from datoso_dev.sync import Outcome, SyncResult
 
@@ -144,8 +146,20 @@ def floor_text(change: FloorChange) -> str:
     return f'{extra}{before} → {change.dist}>={change.target}'
 
 
-def plan_table(plan: Plan) -> Table:
-    """Render the release plan: one row per package, in step order."""
+def _action_text(probe: Probe) -> Text:
+    style = {Action.OPEN_PR: 'green', Action.PUBLISH: 'bold cyan', Action.WAIT_MERGE: 'yellow'}
+    if probe.action is Action.ERROR:
+        return Text(f'error: {probe.detail}', style='bold red')
+    label = str(probe.action)
+    if probe.action is Action.PUBLISH:
+        label += f' (PR merged: {probe.pr_url})'
+    elif probe.action in {Action.WAIT_MERGE, Action.RELEASED} and probe.pr_url:
+        label += f' ({probe.pr_url})'
+    return Text(label, style=style.get(probe.action, 'dim'))
+
+
+def plan_table(plan: Plan, probes: Mapping[str, Probe] | None = None) -> Table:
+    """Render the release plan: one row per package, in step order, with the action probed for step 1."""
     table = Table(title='Release plan', title_justify='left', header_style='bold')
     for column in ('Step', 'Package', 'Version', 'Dependency floors', 'Status'):
         table.add_column(column, no_wrap=column in {'Step', 'Package', 'Version'})
@@ -154,9 +168,9 @@ def plan_table(plan: Plan) -> Table:
         if item.blockers:
             status = Text('blocked: ' + '; '.join(item.blockers), style='bold red')
         elif item.name in first:
-            status = Text('ready', style='green')
+            status = _action_text(probes[item.name]) if probes and item.name in probes else Text('ready', style='green')
         else:
-            status = Text('waits for step 1 to be merged and published', style='yellow')
+            status = Text('waits for step 1 to be published', style='yellow')
         table.add_row(
             str(item.step),
             item.name,
@@ -177,7 +191,11 @@ def plan_table(plan: Plan) -> Table:
 
 RELEASE_STYLE = {
     ReleaseOutcome.OPENED: 'green',
-    ReleaseOutcome.ALREADY_OPEN: 'green',
+    ReleaseOutcome.ALREADY_OPEN: 'yellow',
+    ReleaseOutcome.MERGED: 'cyan',
+    ReleaseOutcome.PUBLISHED: 'bold green',
+    ReleaseOutcome.PYPI_PENDING: 'yellow',
+    ReleaseOutcome.ALREADY_RELEASED: 'green',
     ReleaseOutcome.NOTHING_TO_COMMIT: 'yellow',
     ReleaseOutcome.ERROR: 'bold red',
 }

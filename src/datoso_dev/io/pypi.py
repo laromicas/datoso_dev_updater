@@ -30,17 +30,23 @@ class PyPI:
         """JSON API URL of a project."""
         return f'{self.base_url}/{quote(dist_name)}/json'
 
-    def latest_version(self, dist_name: str) -> str | None:
-        """Latest version on PyPI, or ``None`` if the project doesn't exist there."""
+    def _get(self, url: str) -> dict[str, Any] | None:
         request = urllib.request.Request(  # noqa: S310 - fixed https base URL
-            self.url_for(dist_name),
-            headers={'Accept': 'application/json', 'User-Agent': f'datoso-dev/{__version__}'},
+            url, headers={'Accept': 'application/json', 'User-Agent': f'datoso-dev/{__version__}'}
         )
         try:
             with self._open(request, timeout=self.timeout) as response:
-                data = json.load(response)
+                return json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code == HTTP_NOT_FOUND:
                 return None
             raise
-        return data['info']['version']
+
+    def latest_version(self, dist_name: str) -> str | None:
+        """Latest version on PyPI, or ``None`` if the project doesn't exist there."""
+        data = self._get(self.url_for(dist_name))
+        return None if data is None else data['info']['version']
+
+    def has_version(self, dist_name: str, version: str) -> bool:
+        """Whether ``version`` is published (pre-releases included, unlike ``latest_version``)."""
+        return self._get(f'{self.base_url}/{quote(dist_name)}/{quote(version)}/json') is not None
