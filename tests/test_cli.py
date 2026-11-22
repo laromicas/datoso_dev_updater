@@ -9,9 +9,10 @@ import pytest
 from typer.testing import CliRunner
 
 from datoso_dev import __version__, cli
+from datoso_dev.ci import WORKFLOW_PATH, render_ci
 from datoso_dev.workspace import discover
 
-from .fakes import FakeGit, FakePyPI, FakeRepo
+from .fakes import FakeGh, FakeGit, FakePyPI, FakeRepo
 
 runner = CliRunner()
 
@@ -24,9 +25,11 @@ def fakes(sample_workspace: Path, monkeypatch: pytest.MonkeyPatch):
         repos[pkg.path] = FakeRepo(tags=[f'v{pkg.version}'], commits_since={f'v{pkg.version}': 0})
     repos[ws.packages['datoso_seed_redump'].path].commits_since = {'v1.0.1': 2}
     git = FakeGit(repos)
+    gh = FakeGh()
     pypi = FakePyPI({pkg.dist_name: str(pkg.version) for pkg in ws.packages.values()})
     monkeypatch.setattr(cli, 'make_git', lambda: git)
     monkeypatch.setattr(cli, 'make_pypi', lambda: pypi)
+    monkeypatch.setattr(cli, 'make_gh', lambda: gh)
     monkeypatch.delenv(cli.WORKSPACE_ENV, raising=False)
     return ws, git, pypi
 
@@ -101,3 +104,72 @@ def test_sync_dry_run_and_error_exit(fakes):
     assert result.exit_code == 1
     assert 'dry run' in result.output
     assert git.called('pull_rebase') == []
+
+
+# --------------------------------------------------------------------------- ci
+
+
+def test_ci_status_lists_targets(fakes):
+    ws, git, _ = fakes
+    redump = ws.packages['datoso_seed_redump']
+    (redump.path / WORKFLOW_PATH).parent.mkdir(parents=True)
+    (redump.path / WORKFLOW_PATH).write_text(render_ci(redump))
+    result = runner.invoke(cli.app, ['ci', 'status', '-w', str(ws.root)], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert 'datoso_seed_redump' in result.output
+    assert 'up to date' in result.output
+    assert 'missing' in result.output
+    assert 'datoso_seed_mameredump' not in result.output  # skipped package
+    assert git.calls == []  # status is offline
+
+
+def test_ci_sync_dry_run_opens_nothing(fakes):
+    ws, git, _ = fakes
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), '--dry-run'], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert 'dry run' in result.output
+    assert 'will open PR' in result.output
+    assert git.commits == []
+
+
+def test_ci_sync_asks_before_opening_prs(fakes):
+    ws, git, _ = fakes
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root)], input='n\n', terminal_width=200)
+    assert result.exit_code == 1, result.output
+    assert 'Open or update 4 PR(s)?' in result.output
+    assert git.commits == []
+
+
+def test_ci_sync_yes_opens_prs_for_selected(fakes, monkeypatch: pytest.MonkeyPatch):
+    ws, _, _ = fakes
+    gh = FakeGh()
+    monkeypatch.setattr(cli, 'make_gh', lambda: gh)
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), 'redump', '--yes'], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert [pr['repo'].name for pr in gh.created] == ['datoso_seed_redump']
+    assert 'https://github.com/owner/datoso_seed_redump/pull/1' in result.output
+
+
+def test_ci_sync_nothing_to_do(fakes):
+    ws, _, _ = fakes
+    redump = ws.packages['datoso_seed_redump']
+    (redump.path / WORKFLOW_PATH).parent.mkdir(parents=True)
+    (redump.path / WORKFLOW_PATH).write_text(render_ci(redump))
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), 'redump'], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert 'Nothing to do' in result.output
+
+
+def test_ci_sync_unknown_package(fakes):
+    ws, _, _ = fakes
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), 'nope'])
+    assert result.exit_code == 2
+    assert 'unknown package: nope' in result.output
+
+
+def test_ci_sync_error_exit_code(fakes):
+    ws, git, _ = fakes
+    git.repos[ws.packages['datoso_seed_redump'].path].fail_on = {'push'}
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), 'redump', '--yes'], terminal_width=200)
+    assert result.exit_code == 1
+    assert 'error' in result.output

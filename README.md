@@ -2,7 +2,7 @@
 
 Release and maintenance tool for the [datoso](https://github.com/laromicas/datoso) multi-repo workspace.
 
-> **Status: phase 1 of the rewrite.** `status` and `sync` are available. The legacy scripts (`update_version.py`,
+> **Status: phases 1–2 of the rewrite.** `status`, `sync` and `ci` are available. The legacy scripts (`update_version.py`,
 > `make_prs.py`, `make_release.py`, `*.sh`) still exist until the release flow lands. See the design doc in the
 > workspace: `docs/tooling/datoso-dev-design.md`.
 
@@ -20,7 +20,15 @@ datoso-dev status --offline    # no git fetch, no PyPI queries
 datoso-dev status --json       # machine-readable
 datoso-dev sync --dry-run      # fetch all repos and show what would change
 datoso-dev sync                # switch clean repos to master and pull --rebase (dirty repos are skipped)
+datoso-dev ci status           # is each repo's .github/workflows/ci.yml in line with the template?
+datoso-dev ci sync --dry-run   # what `ci sync` would do
+datoso-dev ci sync [PKG...]    # commit the workflow on branch datoso-dev/ci and open (or update) a PR per repo
 ```
+
+`ci sync` targets the plugin and every seed (core keeps its own `pytest.yml`; skipped packages need
+`--include-skipped`). It only touches repos that are clean, on `master` and in sync with `origin`, shows the plan and
+asks before pushing (`--yes` to skip). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors,
+`ruff check`, import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` directory exists.
 
 The workspace is auto-detected from the current directory (or the tool's own location). Override it with
 `--workspace PATH` or `DATOSO_DEV_WORKSPACE`.
@@ -47,7 +55,8 @@ uv venv .venv && uv pip install --python .venv/bin/python -e '.[test]'
 ```
 
 Architecture:
-- Side effects live only in `src/datoso_dev/io/` (git, PyPI), behind the `Protocol`s in `ports.py`.
+- Side effects live only in `src/datoso_dev/io/` (git, gh, PyPI), behind the `Protocol`s in `ports.py`.
 - Tests use the in-memory fakes in `tests/fakes.py`. Tests marked `integration` use real git repositories in temp
   dirs. No test uses the network.
-- Core logic (`workspace.py`, `state.py`, `sync.py`) is developed test-first.
+- Core logic (`workspace.py`, `state.py`, `sync.py`, `ci.py`) is developed test-first. `tests/io/test_gh.py` checks the
+  exact `gh` arguments without calling GitHub.

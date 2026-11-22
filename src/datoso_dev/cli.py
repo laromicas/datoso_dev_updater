@@ -12,15 +12,19 @@ import typer
 from rich.console import Console
 
 from datoso_dev import __version__
+from datoso_dev.ci import CiOutcome, ci_status, ci_sync_all, ci_targets
+from datoso_dev.io.gh import Gh
 from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
-from datoso_dev.ports import GitPort, PyPIPort
+from datoso_dev.ports import GhPort, GitPort, PyPIPort
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states
 from datoso_dev.sync import Outcome, sync_all
-from datoso_dev.ui import print_status, sync_table
+from datoso_dev.ui import ci_status_table, ci_sync_table, print_status, sync_table
 from datoso_dev.workspace import Workspace, WorkspaceError, discover, find_workspace_root
 
 app = typer.Typer(help='Release and maintenance tool for the datoso workspace.', no_args_is_help=True)
+ci_app = typer.Typer(help='Managed CI workflow for the plugin and seeds.', no_args_is_help=True)
+app.add_typer(ci_app, name='ci')
 console = Console()
 
 WORKSPACE_ENV = 'DATOSO_DEV_WORKSPACE'
@@ -35,6 +39,11 @@ def make_git() -> GitPort:
 def make_pypi() -> PyPIPort:
     """Real PyPI adapter."""
     return PyPI()
+
+
+def make_gh() -> GhPort:
+    """Real GitHub CLI adapter."""
+    return Gh()
 
 
 def resolve_workspace(explicit: Path | None) -> Workspace:
@@ -131,4 +140,57 @@ def sync(
         results = sync_all(ws.submodule_paths, make_git(), branch=branch, dry_run=dry_run)
     console.print(sync_table(results, dry_run=dry_run))
     if any(r.outcome is Outcome.ERROR for r in results):
+        raise typer.Exit(1)
+
+
+IncludeSkippedOpt = Annotated[
+    bool, typer.Option('--include-skipped', help='Also target packages with [tool.datoso-dev] skip = true.')
+]
+
+
+@ci_app.command('status')
+def ci_status_command(workspace: WorkspaceOpt = None, include_skipped: IncludeSkippedOpt = False) -> None:
+    """Compare each package's .github/workflows/ci.yml with the template (offline, working tree)."""
+    ws = resolve_workspace(workspace)
+    rows = [(pkg.name, ci_status(pkg)) for pkg in ci_targets(ws, include_skipped=include_skipped)]
+    console.print(ci_status_table(rows))
+
+
+@ci_app.command('sync')
+def ci_sync_command(
+    packages: Annotated[
+        list[str] | None, typer.Argument(help='Packages to target (default: all but core).', show_default=False)
+    ] = None,
+    workspace: WorkspaceOpt = None,
+    include_skipped: IncludeSkippedOpt = False,
+    dry_run: Annotated[bool, typer.Option('--dry-run', help='Only check and report; change nothing.')] = False,
+    yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
+) -> None:
+    """Install or update the managed CI workflow in each repo, through a PR on branch datoso-dev/ci."""
+    ws = resolve_workspace(workspace)
+    try:
+        targets = ci_targets(ws, include_skipped=include_skipped, only=packages or None)
+    except WorkspaceError as exc:
+        console.print(f'[bold red]Error:[/] {exc}')
+        raise typer.Exit(2) from exc
+    git, gh = make_git(), make_gh()
+    with console.status('Checking repositories…', spinner='dots'):
+        plan = ci_sync_all(targets, git, gh, dry_run=True)
+    todo = [r.package for r in plan if r.outcome in {CiOutcome.OPENED, CiOutcome.UPDATED}]
+    errors = any(r.outcome is CiOutcome.ERROR for r in plan)
+    title = 'ci sync (dry run — nothing changed)' if dry_run else ('ci sync — plan' if todo else 'ci sync')
+    console.print(ci_sync_table(plan, title=title))
+    if dry_run or not todo:
+        if not todo:
+            console.print('[green]Nothing to do.[/]')
+        raise typer.Exit(1 if errors else 0)
+    if not yes:
+        typer.confirm(f'Open or update {len(todo)} PR(s)?', abort=True)
+    with console.status('Opening pull requests…', spinner='dots'):
+        results = ci_sync_all(todo, git, gh)
+    console.print(ci_sync_table(results, title='ci sync'))
+    for result in results:
+        if result.pr_url:
+            console.print(f'{result.package.name}: {result.pr_url}', soft_wrap=True, highlight=False)
+    if errors or any(r.outcome is CiOutcome.ERROR for r in results):
         raise typer.Exit(1)

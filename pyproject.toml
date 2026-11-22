@@ -29,6 +29,9 @@ datoso-dev = "datoso_dev.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+datoso_dev = ["templates/*.yml"]
+
 [tool.setuptools.dynamic]
 version = {attr = "datoso_dev.__version__"}
 
