@@ -49,6 +49,9 @@ def test_only_actionable_packages_are_selectable(env):
         ),
         CiResult(pkgs['datoso_seed_base'], CiOutcome.UP_TO_DATE, dry_run=True),
         CiResult(pkgs['datoso_plugin_internetarchive'], CiOutcome.SKIPPED, 'uncommitted changes', dry_run=True),
+        CiResult(
+            pkgs['datoso_seed_mameredump'], CiOutcome.PR_OPEN, 'waiting for merge', 'https://x/pull/3', dry_run=True
+        ),
     ]
     options = selection_options(results)
     assert [(o.value, o.disabled) for o in options] == [
@@ -56,6 +59,7 @@ def test_only_actionable_packages_are_selectable(env):
         (pkgs['datoso_seed_enhanced'], None),
         (pkgs['datoso_seed_base'], 'up to date'),
         (pkgs['datoso_plugin_internetarchive'], 'skipped: uncommitted changes'),
+        (pkgs['datoso_seed_mameredump'], 'PR open: waiting for merge'),
     ]
     assert 'will open PR' in options[0].label
     assert 'will update PR' in options[1].label
@@ -108,8 +112,8 @@ def test_menu_refreshes_after_sync(env):
     ws, git, _, _, _ = env
     redump = ws.packages['datoso_seed_redump']
     run(env, [Action.SYNC, [redump], True, Action.QUIT])
-    # initial check of every target + the sync's own fetch of redump + a full re-check afterwards
-    assert len(git.called('fetch')) == 2 * len(ci_targets(ws)) + 1
+    # initial check + re-check before the selection + the sync's own fetch of redump + re-check afterwards
+    assert len(git.called('fetch')) == 3 * len(ci_targets(ws)) + 1
 
 
 def test_nothing_actionable_skips_checkbox(env):
@@ -158,3 +162,71 @@ def test_menu_error_exit_code(env):
     git.repos[redump.path].fail_on = {'push'}
     code, _ = run(env, [Action.SYNC, [redump], True, Action.QUIT])
     assert code == 1
+
+
+def test_sync_rechecks_before_offering_selection(env):
+    """State can change while the menu is open (PRs merged, repos behind): never offer a stale selection."""
+    ws, git, gh, _, out = env
+
+    def everything_falls_behind(_options):
+        for pkg in ci_targets(ws):
+            git.repos[pkg.path].behind = 1
+        return Action.SYNC
+
+    code, prompter = run(env, [everything_falls_behind, Action.QUIT])
+    assert code == 0
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select']  # no checkbox: straight back to the menu
+    assert 'behind by 1' in out.getvalue()
+    assert 'Nothing to do' in out.getvalue()
+    assert gh.created == []
+
+
+def test_pull_updates_behind_repos_then_rechecks(env):
+    ws, git, _, _, out = env
+    redump = ws.packages['datoso_seed_redump']
+    git.repos[redump.path].behind = 1
+    code, prompter = run(env, [Action.PULL, True, Action.QUIT])
+    assert code == 0
+    assert git.called('pull_rebase') == [redump.path]  # only the repo that was behind
+    assert prompter.asked[1][1] == 'Pull 1 repo(s) that are behind or not on master?'
+    assert len(git.called('fetch')) >= 2 * len(ci_targets(ws))  # status re-checked afterwards
+    assert 'updated' in out.getvalue()
+
+
+def test_pull_with_nothing_behind_goes_back_to_menu(env):
+    _, git, _, _, out = env
+    code, prompter = run(env, [Action.PULL, Action.QUIT])
+    assert code == 0
+    assert git.called('pull_rebase') == []
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select']
+    assert 'Every repo is up to date' in out.getvalue()
+
+
+def test_pull_declined_does_nothing(env):
+    ws, git, _, _, _ = env
+    git.repos[ws.packages['datoso_seed_redump'].path].behind = 1
+    run(env, [Action.PULL, False, Action.QUIT])
+    assert git.called('pull_rebase') == []
+
+
+def test_escape_in_checkbox_goes_back_to_menu(env):
+    _, _, gh, _, _ = env
+    code, prompter = run(env, [Action.SYNC, None, Action.QUIT])  # None = Esc / Ctrl-C
+    assert code == 0
+    assert gh.created == []
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'checkbox', 'select']
+
+
+def test_escape_at_confirmation_does_nothing(env):
+    ws, git, gh, _, _ = env
+    code, _ = run(env, [Action.SYNC, [ws.packages['datoso_seed_redump']], None, Action.QUIT])
+    assert code == 0
+    assert gh.created == []
+    assert git.commits == []
+
+
+def test_escape_in_diff_picker_goes_back(env):
+    _ = env
+    code, prompter = run(env, [Action.DIFF, None, Action.QUIT])
+    assert code == 0
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select', 'select']

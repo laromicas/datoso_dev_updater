@@ -11,7 +11,8 @@ from rich.syntax import Syntax
 from datoso_dev.ci import WORKFLOW_PATH, CiOutcome, CiResult, ci_sync_all, ci_targets, render_ci
 from datoso_dev.ports import GhPort, GitPort
 from datoso_dev.prompts import Option, Prompter
-from datoso_dev.ui import ci_sync_table, planned_label, print_pr_urls
+from datoso_dev.sync import sync_all
+from datoso_dev.ui import ci_sync_table, planned_label, print_pr_urls, sync_table
 from datoso_dev.workspace import Package, Workspace
 
 ACTIONABLE = frozenset({CiOutcome.OPENED, CiOutcome.UPDATED})
@@ -22,6 +23,7 @@ class Action(StrEnum):
 
     SYNC = 'sync'
     DIFF = 'diff'
+    PULL = 'pull'
     REFRESH = 'refresh'
     QUIT = 'quit'
 
@@ -29,6 +31,7 @@ class Action(StrEnum):
 MENU = [
     Option('Open / update PRs for selected packages…', Action.SYNC),
     Option('Show workflow diff for a package…', Action.DIFF),
+    Option('Pull repos that are behind or not on master…', Action.PULL),
     Option('Refresh status', Action.REFRESH),
     Option('Quit', Action.QUIT),
 ]
@@ -61,23 +64,28 @@ def ci_menu(  # noqa: PLR0913
     targets = ci_targets(ws, include_skipped=include_skipped)
     failed = False
     plan: list[CiResult] | None = None
+
+    def check() -> list[CiResult]:
+        with console.status('Checking repositories…', spinner='dots'):
+            fresh = ci_sync_all(targets, git, gh, dry_run=True)
+        console.print(ci_sync_table(fresh, title='ci workflow status'))
+        return fresh
+
     while True:
         if plan is None:
-            with console.status('Checking repositories…', spinner='dots'):
-                plan = ci_sync_all(targets, git, gh, dry_run=True)
-            console.print(ci_sync_table(plan, title='ci workflow status'))
+            plan = check()
         action = prompter.select('What do you want to do?', MENU)
         if action in {None, Action.QUIT}:
             return 1 if failed else 0
-        if action is Action.REFRESH:
-            plan = None
-        elif action is Action.DIFF:
-            _show_diff(plan, prompter, console)
-        elif action is Action.SYNC:
-            results = _sync_selected(plan, git, gh, prompter, console)
-            if results is not None:
-                failed |= any(r.outcome is CiOutcome.ERROR for r in results)
-                plan = None  # re-check after pushing
+        if action is not Action.SYNC:
+            if _other_action(action, plan, git, prompter, console):
+                plan = None  # something changed: re-check
+            continue
+        plan = check()  # repos/PRs may have changed while the menu was open: never offer a stale selection
+        results = _sync_selected(plan, git, gh, prompter, console)
+        if results is not None:
+            failed |= any(r.outcome is CiOutcome.ERROR for r in results)
+            plan = None  # re-check after pushing
 
 
 def _sync_selected(
@@ -85,7 +93,7 @@ def _sync_selected(
 ) -> list[CiResult] | None:
     """Ask which packages to sync, confirm, and run. ``None`` when nothing was done."""
     if not any(r.outcome in ACTIONABLE for r in plan):
-        console.print('[green]Nothing to do:[/] every selectable workflow is up to date.')
+        console.print('[green]Nothing to do:[/] no package needs a PR right now (see the table for why).')
         return None
     picked: list[Package] = prompter.checkbox('Which packages?', selection_options(plan)) or []
     if not picked:
@@ -115,3 +123,27 @@ def _show_diff(plan: list[CiResult], prompter: Prompter, console: Console) -> No
         )
     )
     console.print(Syntax(diff, 'diff', theme='ansi_dark', background_color='default'))
+
+
+def _other_action(action: Action, plan: list[CiResult], git: GitPort, prompter: Prompter, console: Console) -> bool:
+    """Run a non-sync menu action. Return whether the status must be re-checked."""
+    if action is Action.DIFF:
+        _show_diff(plan, prompter, console)
+        return False
+    if action is Action.PULL:
+        return _pull_behind(plan, git, prompter, console)
+    return True  # REFRESH
+
+
+def _pull_behind(plan: list[CiResult], git: GitPort, prompter: Prompter, console: Console) -> bool:
+    """Switch clean repos to master and pull them (same rules as `datoso-dev sync`). Return whether anything ran."""
+    paths = [r.package.path for r in plan if r.needs_pull]
+    if not paths:
+        console.print('[green]Every repo is up to date[/] (or needs manual attention; see the table).')
+        return False
+    if not prompter.confirm(f'Pull {len(paths)} repo(s) that are behind or not on master?', default=True):
+        return False
+    with console.status('Pulling repositories…', spinner='dots'):
+        results = sync_all(paths, git)
+    console.print(sync_table(results, dry_run=False))
+    return True

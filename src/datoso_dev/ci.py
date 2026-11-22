@@ -19,6 +19,7 @@ from datoso_dev.workspace import CORE, Package, Workspace, WorkspaceError
 WORKFLOW_PATH = Path('.github/workflows/ci.yml')
 CI_BRANCH = 'datoso-dev/ci'
 SEED_PREFIX = 'datoso_seed_'
+PLUGIN_PREFIX = 'datoso_plugin_'
 
 _SEED_STEPS = """\
       - name: datoso doctor
@@ -49,6 +50,7 @@ class CiOutcome(StrEnum):
     UP_TO_DATE = 'up to date'
     OPENED = 'PR opened'
     UPDATED = 'PR updated'
+    PR_OPEN = 'PR open'  # an open PR already carries the current template: nothing to push
     SKIPPED = 'skipped'
     ERROR = 'error'
 
@@ -62,6 +64,7 @@ class CiResult:
     detail: str = ''
     pr_url: str | None = None
     dry_run: bool = False
+    needs_pull: bool = False  # skipped only because the clean repo is behind or on another branch (`sync` fixes it)
 
 
 def template_text() -> str:
@@ -77,7 +80,7 @@ def render_ci(pkg: Package, template: str | None = None) -> str:
 
 
 def _resolve(ws: Workspace, name: str) -> str:
-    for candidate in (name, f'{SEED_PREFIX}{name}'):
+    for candidate in (name, f'{SEED_PREFIX}{name}', f'{PLUGIN_PREFIX}{name}'):
         if candidate in ws.packages:
             return candidate
     msg = f'unknown package: {name}'
@@ -103,21 +106,21 @@ def ci_status(pkg: Package) -> CiStatus:
     return CiStatus.UP_TO_DATE if workflow.read_text(encoding='utf-8') == render_ci(pkg) else CiStatus.OUTDATED
 
 
-def _unsafe(git: GitPort, repo: Path, default_branch: str) -> str | None:
-    """Why the repo can't be used as a clean base for the CI branch, or ``None``."""
+def _unsafe(git: GitPort, repo: Path, default_branch: str) -> tuple[str, bool] | None:
+    """Why the repo can't be used as a clean base for the CI branch (and whether pulling fixes it), or ``None``."""
     if git.changed_files(repo):
-        return 'uncommitted changes'
+        return 'uncommitted changes', False
     branch = git.current_branch(repo)
     if branch != default_branch:
-        return f'on {branch}, not {default_branch}'
+        return f'on {branch}, not {default_branch}', True
     counts = git.ahead_behind(repo)
     if counts is None:
-        return 'no upstream'
+        return 'no upstream', False
     ahead, behind = counts
     if behind:
-        return f'behind by {behind} (run datoso-dev sync)'
+        return f'behind by {behind} (pull it first)', True
     if ahead:
-        return f'{ahead} unpushed commit(s)'
+        return f'{ahead} unpushed commit(s)', False
     return None
 
 
@@ -133,23 +136,29 @@ def ci_sync(
     repo = pkg.path
     try:
         git.fetch(repo)
-        reason = _unsafe(git, repo, default_branch)
-        if reason:
-            return CiResult(pkg, CiOutcome.SKIPPED, reason, dry_run=dry_run)
+        unsafe = _unsafe(git, repo, default_branch)
+        if unsafe:
+            reason, pullable = unsafe
+            return CiResult(pkg, CiOutcome.SKIPPED, reason, dry_run=dry_run, needs_pull=pullable)
         status = ci_status(pkg)
         if status is CiStatus.UP_TO_DATE:
             return CiResult(pkg, CiOutcome.UP_TO_DATE, dry_run=dry_run)
         existing = gh.pr_for_branch(repo, CI_BRANCH)
+        detail = f'workflow {status}'
+        if existing:
+            if git.show_file(repo, f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)) == render_ci(pkg):
+                return CiResult(pkg, CiOutcome.PR_OPEN, 'waiting for merge', existing, dry_run=dry_run)
+            detail = 'PR branch outdated'
         outcome = CiOutcome.UPDATED if existing else CiOutcome.OPENED
         verb = 'add' if status is CiStatus.MISSING else 'update'
         title = f'CI: {verb} datoso-dev managed workflow'
         if dry_run:
-            return CiResult(pkg, outcome, f'workflow {status}', existing, dry_run=True)
+            return CiResult(pkg, outcome, detail, existing, dry_run=True)
         _commit_workflow(pkg, git, title, default_branch)
         url = existing or gh.pr_create(repo, base=default_branch, head=CI_BRANCH, title=title, body=_PR_BODY)
     except (GitError, GhError) as exc:
         return CiResult(pkg, CiOutcome.ERROR, str(exc), dry_run=dry_run)
-    return CiResult(pkg, outcome, f'workflow {status}', url)
+    return CiResult(pkg, outcome, detail, url)
 
 
 def _commit_workflow(pkg: Package, git: GitPort, message: str, default_branch: str) -> None:

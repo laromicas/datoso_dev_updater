@@ -96,3 +96,8 @@ class Git:
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         """Push ``branch`` to ``origin`` and set its upstream."""
         self._run(repo, 'push', '--quiet', *(['--force'] if force else []), '--set-upstream', 'origin', branch)
+
+    def show_file(self, repo: Path, ref: str, path: str) -> str | None:
+        """Content of ``path`` at ``ref``, or ``None`` if the ref or file doesn't exist."""
+        proc = self._run(repo, 'show', f'{ref}:{path}', check=False)
+        return proc.stdout if proc.returncode == 0 else None

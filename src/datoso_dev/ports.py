@@ -53,6 +53,9 @@ class GitPort(Protocol):
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         """Push ``branch`` to ``origin`` and set its upstream."""
 
+    def show_file(self, repo: Path, ref: str, path: str) -> str | None:
+        """Content of ``path`` at ``ref`` (e.g. ``origin/branch``), or ``None`` if the ref or file doesn't exist."""
+
 
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""

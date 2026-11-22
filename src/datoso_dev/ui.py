@@ -28,6 +28,7 @@ CI_OUTCOME_STYLE = {
     CiOutcome.UP_TO_DATE: 'green',
     CiOutcome.OPENED: 'cyan',
     CiOutcome.UPDATED: 'cyan',
+    CiOutcome.PR_OPEN: 'green',
     CiOutcome.SKIPPED: 'yellow',
     CiOutcome.ERROR: 'bold red',
 }

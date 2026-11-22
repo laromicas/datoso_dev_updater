@@ -70,6 +70,11 @@ def test_targets_include_skipped(sample_workspace: Path):
     assert 'datoso_seed_mameredump' in [p.name for p in ci_targets(ws, include_skipped=True)]
 
 
+def test_targets_short_name_for_plugin(sample_workspace: Path):
+    ws = discover(sample_workspace)
+    assert [p.name for p in ci_targets(ws, only=['internetarchive'])] == ['datoso_plugin_internetarchive']
+
+
 def test_targets_only_selected(sample_workspace: Path):
     ws = discover(sample_workspace)
     assert [p.name for p in ci_targets(ws, only=['datoso_seed_redump', 'base'])] == [
@@ -146,20 +151,21 @@ def test_sync_outdated_with_open_pr_updates_branch_only(redump):
 
 
 @pytest.mark.parametrize(
-    ('repo', 'detail'),
+    ('repo', 'detail', 'needs_pull'),
     [
-        (FakeRepo(changed=['x.py']), 'uncommitted'),
-        (FakeRepo(branch='feature', branches={'master', 'feature'}), 'on feature'),
-        (FakeRepo(behind=2), 'behind'),
-        (FakeRepo(ahead=1), 'unpushed'),
-        (FakeRepo(has_upstream=False), 'no upstream'),
+        (FakeRepo(changed=['x.py']), 'uncommitted', False),
+        (FakeRepo(branch='feature', branches={'master', 'feature'}), 'on feature', True),
+        (FakeRepo(behind=2), 'behind', True),
+        (FakeRepo(ahead=1), 'unpushed', False),
+        (FakeRepo(has_upstream=False), 'no upstream', False),
     ],
 )
-def test_sync_skips_unsafe_repos(redump, repo: FakeRepo, detail: str):
+def test_sync_skips_unsafe_repos(redump, repo: FakeRepo, detail: str, needs_pull: bool):  # noqa: FBT001
     git, gh = FakeGit({redump.path: repo}), FakeGh()
     result = ci_sync(redump, git, gh)
     assert result.outcome is CiOutcome.SKIPPED
     assert detail in result.detail
+    assert result.needs_pull is needs_pull
     assert git.commits == []
     assert not (redump.path / WORKFLOW_PATH).exists()
 
@@ -203,3 +209,37 @@ def test_sync_commit_failure_restores_previous_workflow(redump):
     git, gh = FakeGit({redump.path: FakeRepo(fail_on={'commit_paths'})}), FakeGh()
     ci_sync(redump, git, gh)
     assert (redump.path / WORKFLOW_PATH).read_text() == 'old\n'
+
+
+def test_lint_rules_are_explicit(sample_workspace: Path):
+    """Lint must not depend on ruff's defaults (they grow between releases) nor on the workspace's ALL config.
+
+    Only pyflakes + syntax errors: real bugs, and no RUF100 clash with the workspace's ``# noqa`` comments.
+    """
+    text = render_ci(discover(sample_workspace).packages['datoso_seed_redump'])
+    assert 'run: ruff check --isolated --select E4,E7,E9,F .' in text
+
+
+# --------------------------------------------------------------------------- open PR already current
+
+
+def test_open_pr_already_current_is_not_actionable(redump):
+    url = 'https://github.com/owner/datoso_seed_redump/pull/7'
+    repo = FakeRepo(files={(f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)): render_ci(redump)})
+    git, gh = FakeGit({redump.path: repo}), FakeGh({(redump.path, CI_BRANCH): url})
+    result = ci_sync(redump, git, gh)
+    assert result.outcome is CiOutcome.PR_OPEN
+    assert result.pr_url == url
+    assert 'waiting for merge' in result.detail
+    assert git.commits == []
+    assert git.pushes == []
+
+
+def test_open_pr_with_stale_workflow_is_updated(redump):
+    url = 'https://github.com/owner/datoso_seed_redump/pull/7'
+    repo = FakeRepo(files={(f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)): 'old\n'})
+    git, gh = FakeGit({redump.path: repo}), FakeGh({(redump.path, CI_BRANCH): url})
+    result = ci_sync(redump, git, gh)
+    assert result.outcome is CiOutcome.UPDATED
+    assert 'PR branch outdated' in result.detail
+    assert git.pushes == [(redump.path, CI_BRANCH, True)]

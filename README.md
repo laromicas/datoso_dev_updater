@@ -30,19 +30,26 @@ datoso-dev ci sync --all       # every package (asks once; --yes to skip)
 `datoso-dev ci` is **interactive by default**. It checks every repo, shows a status table (will open PR / will update
 PR / up to date / skipped with the reason), then a menu:
 
-- **Open / update PRs for selected packages…**: a checkbox list (space toggles, `a` all, `i` invert). Packages that
+- **Open / update PRs for selected packages…**: a checkbox list (space toggles, `a` all, `i` invert, Esc goes back). Packages that
   need nothing, or can't be touched safely, are listed but disabled with the reason. You confirm before anything is
   pushed, and the status is re-checked afterwards.
 - **Show workflow diff for a package…**: unified diff between the repo's workflow and the template.
+- **Pull repos that are behind or not on master…**: after you merge PRs on GitHub, your local clones are behind and
+  get skipped. This pulls them (same rules as `datoso-dev sync`: clean repos only) and re-checks.
 - **Refresh status** / **Quit**.
+
+**Esc** (or Ctrl-C) cancels any prompt: back to the menu from a list or a confirmation, and quit from the menu itself.
+The status is re-checked every time you choose *Open / update PRs…*, so a menu left open while you merge PRs never
+offers a stale selection. When nothing needs a PR, it says so and goes back to the menu.
 
 Doing everything at once is opt-in: `ci sync --all`. Without a terminal (scripts, CI), pass names or `--all`, plus
 `--yes`.
 
 For each selected package it commits the workflow on branch `datoso-dev/ci`, force-pushes it, and opens a PR (or just
-updates the branch when a PR is already open). It only touches repos that are clean, on `master` and in sync with
+updates the branch when a PR is already open). An open PR whose branch already has the current template shows as
+**PR open (waiting for merge)** and is left alone. Packages can be named in short form: `redump`, `internetarchive`. It only touches repos that are clean, on `master` and in sync with
 `origin`. Targets: the plugin and every seed (core keeps its own `pytest.yml`; skipped packages need
-`--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check`,
+`--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check` (pyflakes rules only),
 import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` directory exists.
 
 ## Development
