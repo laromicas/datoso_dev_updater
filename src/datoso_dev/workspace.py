@@ -143,11 +143,15 @@ def has_publish_workflow(path: Path) -> bool:
     if not workflows.is_dir():
         return False
     markers = ('pypa/gh-action-pypi-publish', 'twine upload')
-    return any(
-        any(marker in wf.read_text(errors='ignore') for marker in markers)
-        for wf in sorted(workflows.iterdir())
-        if wf.suffix in {'.yml', '.yaml'}
-    )
+    # A guard like ``if: github.repository != 'owner/<package>'`` disables the upload in the package's own repo.
+    own_repo_guard = re.compile(r'github\.repository\s*!=\s*[\'"][^/\'"]+/' + re.escape(path.name) + r'[\'"]')
+    for wf in sorted(workflows.iterdir()):
+        if wf.suffix not in {'.yml', '.yaml'}:
+            continue
+        text = wf.read_text(errors='ignore')
+        if any(marker in text for marker in markers) and not own_repo_guard.search(text):
+            return True
+    return False
 
 
 def _read_version(path: Path, data: dict) -> tuple[Version, Path | None]:

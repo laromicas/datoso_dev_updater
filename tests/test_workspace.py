@@ -13,6 +13,7 @@ from datoso_dev.workspace import (
     WorkspaceError,
     discover,
     find_workspace_root,
+    has_publish_workflow,
     parse_gitmodules,
     release_steps,
 )
@@ -266,3 +267,29 @@ def test_publish_workflow_detection(tmp_path: Path):
     ws = discover(tmp_path)
     assert ws.packages['datoso'].publishes_to_pypi is True
     assert ws.packages['datoso_seed_a'].publishes_to_pypi is False
+
+
+GUARDED_WORKFLOW = """\
+on:
+  release:
+    types: [published]
+jobs:
+  deploy:
+    if: github.repository != '{repo}'
+    steps:
+    - uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
+"""
+
+
+@pytest.mark.parametrize(
+    ('repo', 'expected'),
+    [
+        ('laromicas/datoso_seed_base', False),  # guarded against its own repo: never publishes there
+        ('laromicas/datoso_seed_other', True),  # guard for another repo: still publishes
+    ],
+)
+def test_publish_workflow_repository_guard(tmp_path: Path, repo: str, expected: bool):  # noqa: FBT001
+    pkg = write_package(tmp_path, 'datoso_seed_base', '1.0.0', pypi=False)
+    (pkg / '.github' / 'workflows').mkdir(parents=True)
+    (pkg / '.github' / 'workflows' / 'python-publish.yml').write_text(GUARDED_WORKFLOW.format(repo=repo))
+    assert has_publish_workflow(pkg) is expected

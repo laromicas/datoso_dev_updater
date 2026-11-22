@@ -34,7 +34,8 @@ skip = true    # exclude from releases entirely (e.g. work-in-progress seeds)
 pypi = false   # release on GitHub only, never on PyPI (e.g. the datoso_seed_base scaffold)
 ```
 
-`status` warns if a `pypi = false` package still has a workflow that uploads to PyPI on release.
+`status` warns if a `pypi = false` package still has a workflow that uploads to PyPI on release, unless the job is
+guarded against its own repository (`if: github.repository != 'owner/<package>'`, as in `datoso_seed_base`).
 
 ## Development
 
