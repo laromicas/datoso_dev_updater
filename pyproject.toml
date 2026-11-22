@@ -11,6 +11,7 @@ license = {text = "MIT License"}
 authors = [{name = "Lacides Miranda"}]
 dependencies = [
     "packaging>=23.0",
+    "questionary>=2.0",
     "rich>=13.0",
     "typer>=0.12",
 ]
@@ -28,6 +29,9 @@ datoso-dev = "datoso_dev.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+datoso_dev = ["templates/*.yml"]
 
 [tool.setuptools.dynamic]
 version = {attr = "datoso_dev.__version__"}

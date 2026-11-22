@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from datoso_dev.ports import GitError
+from datoso_dev.ports import GhError, GitError
 
 
 @dataclass
@@ -27,6 +27,8 @@ class FakeGit:
     def __init__(self, repos: dict[Path, FakeRepo] | None = None) -> None:
         self.repos: dict[Path, FakeRepo] = repos or {}
         self.calls: list[tuple[str, Path]] = []
+        self.commits: list[tuple[Path, list[str], str]] = []
+        self.pushes: list[tuple[Path, str, bool]] = []
 
     def _repo(self, method: str, repo: Path) -> FakeRepo:
         self.calls.append((method, repo))
@@ -66,6 +68,19 @@ class FakeGit:
         state = self._repo('pull_rebase', repo)
         state.behind = 0
 
+    def create_branch(self, repo: Path, branch: str) -> None:
+        state = self._repo('create_branch', repo)
+        state.branches.add(branch)
+        state.branch = branch
+
+    def commit_paths(self, repo: Path, paths: list[str], message: str) -> None:
+        self._repo('commit_paths', repo)
+        self.commits.append((repo, list(paths), message))
+
+    def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
+        self._repo('push', repo)
+        self.pushes.append((repo, branch, force))
+
     def called(self, method: str) -> list[Path]:
         return [repo for name, repo in self.calls if name == method]
 
@@ -78,3 +93,52 @@ class FakePyPI:
     def latest_version(self, dist_name: str) -> str | None:
         self.queried.append(dist_name)
         return self.versions.get(dist_name)
+
+
+class FakeGh:
+    """In-memory GitHub: open PRs keyed by (repo, head branch)."""
+
+    def __init__(self, open_prs: dict[tuple[Path, str], str] | None = None, *, fail: bool = False) -> None:
+        self.open_prs = open_prs or {}
+        self.created: list[dict[str, object]] = []
+        self.fail = fail
+
+    def pr_for_branch(self, repo: Path, head: str) -> str | None:
+        return self.open_prs.get((repo, head))
+
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
+        if self.fail:
+            msg = f'gh pr create failed in {repo}'
+            raise GhError(msg)
+        url = f'https://github.com/owner/{repo.name}/pull/{len(self.created) + 1}'
+        self.created.append({'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url})
+        self.open_prs[(repo, head)] = url
+        return url
+
+
+class FakePrompter:
+    """Replays scripted answers and records every question.
+
+    Answers for ``select``/``checkbox`` may be callables receiving the offered options, so tests can assert on them.
+    """
+
+    def __init__(self, answers: list[object]) -> None:
+        self.answers = list(answers)
+        self.asked: list[tuple[str, str, list]] = []  # (kind, message, options)
+
+    def _next(self, kind: str, message: str, options: list) -> object:
+        self.asked.append((kind, message, options))
+        if not self.answers:
+            msg = f'unexpected {kind} prompt: {message}'
+            raise AssertionError(msg)
+        answer = self.answers.pop(0)
+        return answer(options) if callable(answer) else answer
+
+    def select(self, message: str, options):
+        return self._next('select', message, list(options))
+
+    def checkbox(self, message: str, options):
+        return self._next('checkbox', message, list(options))
+
+    def confirm(self, message: str, *, default: bool = False):
+        return self._next('confirm', message, [])

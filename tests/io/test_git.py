@@ -119,3 +119,42 @@ def test_switch_and_errors(remote_pair):
 def test_missing_executable_raises_git_error(tmp_path: Path):
     with pytest.raises(GitError):
         Git(executable='definitely-not-git').tags(tmp_path)
+
+
+def test_create_branch_commit_and_push(remote_pair):
+    origin, work, _ = remote_pair
+    git = Git()
+    git.create_branch(work, 'datoso-dev/ci')
+    assert git.current_branch(work) == 'datoso-dev/ci'
+    (work / '.github' / 'workflows').mkdir(parents=True)
+    (work / '.github' / 'workflows' / 'ci.yml').write_text('name: CI\n')
+    git.commit_paths(work, ['.github/workflows/ci.yml'], 'CI: add workflow')
+    git.push(work, 'datoso-dev/ci', force=True)
+    assert sh(origin, 'log', '-1', '--format=%s', 'datoso-dev/ci') == 'CI: add workflow'
+    assert git.ahead_behind(work) == (0, 0)  # upstream was set
+    git.switch(work, 'master')
+    assert not (work / '.github').exists()
+
+
+def test_create_branch_resets_existing_branch_and_force_push(remote_pair):
+    origin, work, _ = remote_pair
+    git = Git()
+    git.create_branch(work, 'topic')
+    commit(work, 'first.txt')
+    git.push(work, 'topic')
+    git.switch(work, 'master')
+    git.create_branch(work, 'topic')  # back at master, the old commit is dropped
+    commit(work, 'second.txt')
+    with pytest.raises(GitError):
+        git.push(work, 'topic')  # diverged: plain push is rejected
+    git.push(work, 'topic', force=True)
+    assert sh(origin, 'log', '--format=%s', 'topic').splitlines() == ['add second.txt', 'add README.md']
+
+
+def test_commit_paths_only_commits_given_paths(remote_pair):
+    _, work, _ = remote_pair
+    git = Git()
+    (work / 'a.txt').write_text('a')
+    (work / 'b.txt').write_text('b')
+    git.commit_paths(work, ['a.txt'], 'add a')
+    assert git.changed_files(work) == ['b.txt']

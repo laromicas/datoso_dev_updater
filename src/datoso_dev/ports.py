@@ -1,4 +1,4 @@
-"""Interfaces to the outside world (git, PyPI).
+"""Interfaces to the outside world (git, GitHub, PyPI).
 
 Real implementations live in ``datoso_dev.io``; tests inject in-memory fakes.
 """
@@ -11,6 +11,10 @@ from typing import Protocol
 
 class GitError(Exception):
     """A git command failed."""
+
+
+class GhError(Exception):
+    """A GitHub CLI (``gh``) command failed."""
 
 
 class GitPort(Protocol):
@@ -39,6 +43,25 @@ class GitPort(Protocol):
 
     def pull_rebase(self, repo: Path) -> None:
         """``git pull --rebase`` on the current branch."""
+
+    def create_branch(self, repo: Path, branch: str) -> None:
+        """Create (or reset) ``branch`` at the current commit and switch to it."""
+
+    def commit_paths(self, repo: Path, paths: list[str], message: str) -> None:
+        """Stage ``paths`` (relative to the repo) and commit them."""
+
+    def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
+        """Push ``branch`` to ``origin`` and set its upstream."""
+
+
+class GhPort(Protocol):
+    """GitHub pull-request operations, run in a repository checkout."""
+
+    def pr_for_branch(self, repo: Path, head: str) -> str | None:
+        """URL of the open PR whose head is ``head``, or ``None``."""
+
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
+        """Open a PR and return its URL."""
 
 
 class PyPIPort(Protocol):

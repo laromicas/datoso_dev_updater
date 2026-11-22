@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.state import PackageState, Status
 from datoso_dev.sync import Outcome, SyncResult
 
@@ -22,6 +23,16 @@ OUTCOME_STYLE = {
     Outcome.ERROR: 'bold red',
 }
 
+CI_STATUS_STYLE = {CiStatus.UP_TO_DATE: 'green', CiStatus.MISSING: 'yellow', CiStatus.OUTDATED: 'cyan'}
+CI_OUTCOME_STYLE = {
+    CiOutcome.UP_TO_DATE: 'green',
+    CiOutcome.OPENED: 'cyan',
+    CiOutcome.UPDATED: 'cyan',
+    CiOutcome.SKIPPED: 'yellow',
+    CiOutcome.ERROR: 'bold red',
+}
+
+_planned = {CiOutcome.OPENED: 'will open PR', CiOutcome.UPDATED: 'will update PR'}
 
 EMPTY = '\N{EN DASH}'
 
@@ -77,3 +88,42 @@ def sync_table(results: list[SyncResult], *, dry_run: bool) -> Table:
             result.path.name, Text(str(result.outcome), style=OUTCOME_STYLE[result.outcome]), branch, result.detail
         )
     return table
+
+
+def ci_status_table(rows: list[tuple[str, CiStatus]]) -> Table:
+    """Managed-workflow status per package."""
+    table = Table(title='ci workflow', title_justify='left', header_style='bold')
+    table.add_column('Package', no_wrap=True)
+    table.add_column('Workflow')
+    for name, status in rows:
+        table.add_row(name, Text(str(status), style=CI_STATUS_STYLE[status]))
+    return table
+
+
+def ci_sync_table(results: list[CiResult], *, title: str) -> Table:
+    """Table of ``ci sync`` outcomes (planned or done)."""
+    table = Table(title=title, title_justify='left', header_style='bold')
+    table.add_column('Package', no_wrap=True)
+    table.add_column('Result', no_wrap=True)
+    table.add_column('Detail')
+    table.add_column('PR', overflow='fold', min_width=20)  # full URLs are printed below by print_pr_urls
+    for result in results:
+        table.add_row(
+            result.package.name,
+            Text(planned_label(result), style=CI_OUTCOME_STYLE[result.outcome]),
+            result.detail,
+            result.pr_url or '',
+        )
+    return table
+
+
+def planned_label(result: CiResult) -> str:
+    """Outcome wording: future tense for a dry run ('will open PR'), past tense otherwise."""
+    return _planned.get(result.outcome, str(result.outcome)) if result.dry_run else str(result.outcome)
+
+
+def print_pr_urls(console: Console, results: list[CiResult]) -> None:
+    """Print each PR URL on its own unwrapped line (tables would truncate or fold them)."""
+    for result in results:
+        if result.pr_url:
+            console.print(f'{result.package.name}: {result.pr_url}', soft_wrap=True, highlight=False)

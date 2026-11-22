@@ -83,3 +83,16 @@ class Git:
     def pull_rebase(self, repo: Path) -> None:
         """Pull the upstream of the current branch with rebase."""
         self._run(repo, 'pull', '--rebase', '--quiet')
+
+    def create_branch(self, repo: Path, branch: str) -> None:
+        """Create (or reset) ``branch`` at the current commit and switch to it."""
+        self._run(repo, 'switch', '--quiet', '-C', branch)
+
+    def commit_paths(self, repo: Path, paths: list[str], message: str) -> None:
+        """Stage ``paths`` and commit only them."""
+        self._run(repo, 'add', '--', *paths)
+        self._run(repo, 'commit', '--quiet', '-m', message, '--', *paths)
+
+    def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
+        """Push ``branch`` to ``origin`` and set its upstream."""
+        self._run(repo, 'push', '--quiet', *(['--force'] if force else []), '--set-upstream', 'origin', branch)
