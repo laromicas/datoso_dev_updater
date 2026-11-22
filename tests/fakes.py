@@ -20,6 +20,7 @@ class FakeRepo:
     branches: set[str] = field(default_factory=lambda: {'master'})
     fail_on: set[str] = field(default_factory=set)  # method names that raise GitError
     files: dict[tuple[str, str], str] = field(default_factory=dict)  # (ref, path) -> content
+    subjects: list[str] = field(default_factory=list)  # commit subjects returned by log_subjects
 
 
 class FakeGit:
@@ -30,6 +31,7 @@ class FakeGit:
         self.calls: list[tuple[str, Path]] = []
         self.commits: list[tuple[Path, list[str], str]] = []
         self.pushes: list[tuple[Path, str, bool]] = []
+        self.branch_starts: list[tuple[Path, str, str | None]] = []
 
     def _repo(self, method: str, repo: Path) -> FakeRepo:
         self.calls.append((method, repo))
@@ -69,8 +71,9 @@ class FakeGit:
         state = self._repo('pull_rebase', repo)
         state.behind = 0
 
-    def create_branch(self, repo: Path, branch: str) -> None:
+    def create_branch(self, repo: Path, branch: str, start: str | None = None) -> None:
         state = self._repo('create_branch', repo)
+        self.branch_starts.append((repo, branch, start))
         state.branches.add(branch)
         state.branch = branch
 
@@ -81,6 +84,9 @@ class FakeGit:
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         self._repo('push', repo)
         self.pushes.append((repo, branch, force))
+
+    def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
+        return list(self._repo('log_subjects', repo).subjects)
 
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         return self._repo('show_file', repo).files.get((ref, path))

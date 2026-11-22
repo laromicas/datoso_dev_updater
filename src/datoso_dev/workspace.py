@@ -19,7 +19,7 @@ PACKAGE_PREFIXES = ('datoso_seed_', 'datoso_plugin_')
 CORE = 'datoso'
 
 _SUBMODULE_PATH = re.compile(r'^\s*path\s*=\s*(.+?)\s*$', re.MULTILINE)
-_VERSION_LINE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", re.MULTILINE)
+VERSION_LINE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", re.MULTILINE)
 
 
 class WorkspaceError(Exception):
@@ -43,6 +43,7 @@ class Package:
     skip: bool = False  # excluded from releases entirely
     pypi: bool = True  # False: released on GitHub only, never published to PyPI
     publishes_to_pypi: bool = False  # a GitHub workflow uploads to PyPI on release
+    extras: tuple[tuple[str, tuple[Requirement, ...]], ...] = ()  # optional-dependencies, in file order
 
 
 @dataclass
@@ -120,6 +121,10 @@ def load_package(path: Path) -> Package:
     version, version_file = _read_version(path, data)
     try:
         requirements = tuple(Requirement(r) for r in project.get('dependencies', []))
+        extras = tuple(
+            (extra, tuple(Requirement(r) for r in reqs))
+            for extra, reqs in project.get('optional-dependencies', {}).items()
+        )
     except InvalidRequirement as exc:
         msg = f'{pyproject_path}: {exc}'
         raise WorkspaceError(msg) from exc
@@ -131,6 +136,7 @@ def load_package(path: Path) -> Package:
         version=version,
         version_file=version_file,
         requirements=requirements,
+        extras=extras,
         skip=bool(settings.get('skip', False)),
         pypi=bool(settings.get('pypi', True)),
         publishes_to_pypi=has_publish_workflow(path),
@@ -168,7 +174,7 @@ def _read_version(path: Path, data: dict) -> tuple[Version, Path | None]:
     if not version_file.is_file():
         msg = f'{version_file}: version module not found'
         raise WorkspaceError(msg)
-    match = _VERSION_LINE.search(version_file.read_text())
+    match = VERSION_LINE.search(version_file.read_text())
     if not match:
         msg = f'{version_file}: no __version__ assignment found'
         raise WorkspaceError(msg)
@@ -208,3 +214,12 @@ def release_steps(workspace: Workspace, selected: Iterable[str]) -> list[list[st
         for deps in pending.values():
             deps.difference_update(ready)
     return steps
+
+
+def resolve_name(ws: Workspace, name: str) -> str:
+    """Accept full or short package names: ``redump`` → ``datoso_seed_redump``, ``internetarchive`` → the plugin."""
+    for candidate in (name, *(f'{prefix}{name}' for prefix in PACKAGE_PREFIXES)):
+        if candidate in ws.packages:
+            return candidate
+    msg = f'unknown package: {name}'
+    raise WorkspaceError(msg)

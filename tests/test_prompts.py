@@ -52,3 +52,9 @@ def test_escape_cancels_confirm(keys):
 
 def test_checkbox_hint_mentions_escape():
     assert 'esc' in QuestionaryPrompter.CHECKBOX_HINT
+
+
+def test_checkbox_prechecked_options(keys):
+    options = [Option('first', 1, checked=True), Option('second', 2)]
+    keys.send_text(ENTER)
+    assert prompter(keys).checkbox('Pick', options) == [1]

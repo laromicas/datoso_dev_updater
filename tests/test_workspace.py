@@ -293,3 +293,11 @@ def test_publish_workflow_repository_guard(tmp_path: Path, repo: str, expected: 
     (pkg / '.github' / 'workflows').mkdir(parents=True)
     (pkg / '.github' / 'workflows' / 'python-publish.yml').write_text(GUARDED_WORKFLOW.format(repo=repo))
     assert has_publish_workflow(pkg) is expected
+
+
+def test_optional_dependencies_are_loaded(sample_workspace: Path):
+    core = discover(sample_workspace).packages['datoso']
+    assert [(extra, [str(r) for r in reqs]) for extra, reqs in core.extras] == [
+        ('redump', ['datoso-seed-redump>=1.0.1']),
+    ]
+    hash(core)  # Package stays hashable (used as a prompt value)

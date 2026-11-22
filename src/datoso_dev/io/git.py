@@ -84,9 +84,14 @@ class Git:
         """Pull the upstream of the current branch with rebase."""
         self._run(repo, 'pull', '--rebase', '--quiet')
 
-    def create_branch(self, repo: Path, branch: str) -> None:
-        """Create (or reset) ``branch`` at the current commit and switch to it."""
-        self._run(repo, 'switch', '--quiet', '-C', branch)
+    def create_branch(self, repo: Path, branch: str, start: str | None = None) -> None:
+        """Create (or reset) ``branch`` at ``start`` (default: the current commit) and switch to it."""
+        self._run(repo, 'switch', '--quiet', '--no-track', '-C', branch, *([start] if start else []))
+
+    def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
+        """Commit subjects in ``since..rev`` (all of ``rev``'s history when ``since`` is None), newest first."""
+        out = self._out(repo, 'log', '--format=%s', f'{since}..{rev}' if since else rev)
+        return [line for line in out.splitlines() if line]
 
     def commit_paths(self, repo: Path, paths: list[str], message: str) -> None:
         """Stage ``paths`` and commit only them."""

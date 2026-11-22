@@ -17,6 +17,7 @@ class Option:
     label: str
     value: Any
     disabled: str | None = None  # reason shown next to an entry that can't be picked
+    checked: bool = False  # pre-selected in a checkbox
 
 
 class Prompter(Protocol):
@@ -75,4 +76,4 @@ def _escapable(question: questionary.Question) -> questionary.Question:
 
 
 def _choices(options: Sequence[Option]) -> list[questionary.Choice]:
-    return [questionary.Choice(o.label, value=o.value, disabled=o.disabled) for o in options]
+    return [questionary.Choice(o.label, value=o.value, disabled=o.disabled, checked=o.checked) for o in options]

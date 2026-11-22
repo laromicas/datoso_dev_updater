@@ -2,7 +2,8 @@
 
 Release and maintenance tool for the [datoso](https://github.com/laromicas/datoso) multi-repo workspace.
 
-> **Status: phases 1–2 of the rewrite.** `status`, `sync` and `ci` are available. The legacy scripts (`update_version.py`,
+> **Status: phases 1–3 of the rewrite.** `status`, `sync`, `ci`, `release` (up to "PR opened"), `bump` and `deps`
+> are available. The legacy scripts (`update_version.py`,
 > `make_prs.py`, `make_release.py`, `*.sh`) still exist until the release flow lands. See the design doc in the
 > workspace: `docs/tooling/datoso-dev-design.md`.
 
@@ -52,6 +53,40 @@ updates the branch when a PR is already open). An open PR whose branch already h
 `--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check` (pyflakes rules only),
 import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` directory exists.
 
+## Releasing
+
+```bash
+datoso-dev release                                   # interactive wizard
+datoso-dev release --only redump,tdc --bump patch --dry-run   # just the plan
+datoso-dev release --only redump --bump patch --yes  # non-interactive
+datoso-dev bump redump minor [--pre rc]              # version only, working tree, no git
+datoso-dev deps [--fix]                              # floors behind the latest released core / IA plugin
+```
+
+The wizard shows the status table, then asks:
+
+1. **Packages to release**: a checkbox, with packages that need a release pre-ticked (`--only` pre-ticks those
+   instead). Skipped packages are hidden unless `--include-skipped`.
+2. **Version per package**: patch / minor / major, or *keep* when `__version__` is already bumped but unreleased.
+   `--bump` answers this for every package; `--pre a|b|rc` makes pre-releases.
+3. **The plan**: steps in dependency order, version changes, dependency floors, blockers (dirty, wrong branch,
+   behind, version not newer than the last release, blocked dependency), and core's extras floors for later.
+4. **Open N release PR(s)?** Then, for each step-1 package in parallel: branch `release/vX.Y.Z` from
+   `origin/master`, set `__version__`, apply the floors, commit `Release <pkg> vX.Y.Z`, push, open the PR (body: the
+   version change, the floors and the commits since the last tag).
+
+Esc cancels at any point. Dependency policy: every released package follows the latest core and IA plugin
+(`datoso>=…` is raised to the new core when core is in the batch, else to the latest released core); floors are never
+lowered; packages outside the batch are untouched.
+
+**Only step 1 is opened for now.** A package that depends on another package in the batch (e.g. a seed when core is
+released too) needs that release merged and on PyPI first, because its PR CI installs the new floor from PyPI. Merge
+and publish step 1 (tag + GitHub Release), then run `release` again: the rest becomes step 1. Phase 4 automates the
+merge, release, PyPI wait and the following steps.
+
+Re-running is safe: an open release PR means done, a pushed release branch resumes at "open PR", and failed edits
+are rolled back so `master` stays clean.
+
 ## Development
 
 ```bash
@@ -66,5 +101,6 @@ Architecture:
   through `prompts.Prompter` (questionary in a terminal, scripted answers in tests).
 - Tests use the in-memory fakes in `tests/fakes.py`. Tests marked `integration` use real git repositories in temp
   dirs. No test uses the network.
-- Core logic (`workspace.py`, `state.py`, `sync.py`, `ci.py`, `ci_menu.py`) is developed test-first. `tests/io/test_gh.py` checks the
+- Core logic (`workspace.py`, `state.py`, `sync.py`, `ci.py`, `ci_menu.py`, `versioning.py`, `pyproject.py`,
+  `policy.py`, `planner.py`, `release.py`, `release_menu.py`) is developed test-first. `tests/io/test_gh.py` checks the
   exact `gh` arguments without calling GitHub.
