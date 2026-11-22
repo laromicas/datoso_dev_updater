@@ -30,7 +30,7 @@ datoso-dev ci sync --all       # every package (asks once; --yes to skip)
 `datoso-dev ci` is **interactive by default**. It checks every repo, shows a status table (will open PR / will update
 PR / up to date / skipped with the reason), then a menu:
 
-- **Open / update PRs for selected packages…**: a checkbox list (space toggles, `a` all, `i` invert). Packages that
+- **Open / update PRs for selected packages…**: a checkbox list (space toggles, `a` all, `i` invert, Esc goes back). Packages that
   need nothing, or can't be touched safely, are listed but disabled with the reason. You confirm before anything is
   pushed, and the status is re-checked afterwards.
 - **Show workflow diff for a package…**: unified diff between the repo's workflow and the template.
@@ -38,6 +38,7 @@ PR / up to date / skipped with the reason), then a menu:
   get skipped. This pulls them (same rules as `datoso-dev sync`: clean repos only) and re-checks.
 - **Refresh status** / **Quit**.
 
+**Esc** (or Ctrl-C) cancels any prompt: back to the menu from a list or a confirmation, and quit from the menu itself.
 The status is re-checked every time you choose *Open / update PRs…*, so a menu left open while you merge PRs never
 offers a stale selection. When nothing needs a PR, it says so and goes back to the menu.
 

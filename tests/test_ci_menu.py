@@ -203,3 +203,26 @@ def test_pull_declined_does_nothing(env):
     git.repos[ws.packages['datoso_seed_redump'].path].behind = 1
     run(env, [Action.PULL, False, Action.QUIT])
     assert git.called('pull_rebase') == []
+
+
+def test_escape_in_checkbox_goes_back_to_menu(env):
+    _, _, gh, _, _ = env
+    code, prompter = run(env, [Action.SYNC, None, Action.QUIT])  # None = Esc / Ctrl-C
+    assert code == 0
+    assert gh.created == []
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'checkbox', 'select']
+
+
+def test_escape_at_confirmation_does_nothing(env):
+    ws, git, gh, _, _ = env
+    code, _ = run(env, [Action.SYNC, [ws.packages['datoso_seed_redump']], None, Action.QUIT])
+    assert code == 0
+    assert gh.created == []
+    assert git.commits == []
+
+
+def test_escape_in_diff_picker_goes_back(env):
+    _ = env
+    code, prompter = run(env, [Action.DIFF, None, Action.QUIT])
+    assert code == 0
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select', 'select']
