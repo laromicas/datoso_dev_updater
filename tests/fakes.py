@@ -114,3 +114,31 @@ class FakeGh:
         self.created.append({'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url})
         self.open_prs[(repo, head)] = url
         return url
+
+
+class FakePrompter:
+    """Replays scripted answers and records every question.
+
+    Answers for ``select``/``checkbox`` may be callables receiving the offered options, so tests can assert on them.
+    """
+
+    def __init__(self, answers: list[object]) -> None:
+        self.answers = list(answers)
+        self.asked: list[tuple[str, str, list]] = []  # (kind, message, options)
+
+    def _next(self, kind: str, message: str, options: list) -> object:
+        self.asked.append((kind, message, options))
+        if not self.answers:
+            msg = f'unexpected {kind} prompt: {message}'
+            raise AssertionError(msg)
+        answer = self.answers.pop(0)
+        return answer(options) if callable(answer) else answer
+
+    def select(self, message: str, options):
+        return self._next('select', message, list(options))
+
+    def checkbox(self, message: str, options):
+        return self._next('checkbox', message, list(options))
+
+    def confirm(self, message: str, *, default: bool = False):
+        return self._next('confirm', message, [])

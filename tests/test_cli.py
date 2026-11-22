@@ -10,9 +10,10 @@ from typer.testing import CliRunner
 
 from datoso_dev import __version__, cli
 from datoso_dev.ci import WORKFLOW_PATH, render_ci
+from datoso_dev.ci_menu import Action
 from datoso_dev.workspace import discover
 
-from .fakes import FakeGh, FakeGit, FakePyPI, FakeRepo
+from .fakes import FakeGh, FakeGit, FakePrompter, FakePyPI, FakeRepo
 
 runner = CliRunner()
 
@@ -132,9 +133,9 @@ def test_ci_sync_dry_run_opens_nothing(fakes):
     assert git.commits == []
 
 
-def test_ci_sync_asks_before_opening_prs(fakes):
+def test_ci_sync_all_asks_before_opening_prs(fakes):
     ws, git, _ = fakes
-    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root)], input='n\n', terminal_width=200)
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), '--all'], input='n\n', terminal_width=200)
     assert result.exit_code == 1, result.output
     assert 'Open or update 4 PR(s)?' in result.output
     assert git.commits == []
@@ -173,3 +174,45 @@ def test_ci_sync_error_exit_code(fakes):
     result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), 'redump', '--yes'], terminal_width=200)
     assert result.exit_code == 1
     assert 'error' in result.output
+
+
+@pytest.fixture
+def interactive(monkeypatch: pytest.MonkeyPatch):
+    """Pretend to run in a terminal; the returned prompter quits at the first menu."""
+    prompter = FakePrompter([Action.QUIT])
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
+    return prompter
+
+
+@pytest.mark.parametrize('argv', [['ci'], ['ci', 'sync']])
+def test_ci_without_selection_opens_menu(fakes, interactive, argv: list[str]):
+    ws, git, _ = fakes
+    result = runner.invoke(cli.app, [*argv, '-w', str(ws.root)], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert interactive.asked[0][1] == 'What do you want to do?'
+    assert 'ci workflow status' in result.output
+    assert git.commits == []
+
+
+def test_ci_sync_without_selection_needs_a_terminal(fakes, monkeypatch: pytest.MonkeyPatch):
+    ws, git, _ = fakes
+    monkeypatch.setattr(cli, 'is_interactive', lambda: False)
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root)])
+    assert result.exit_code == 2
+    assert 'pass package names or --all' in result.output
+    assert git.calls == []
+
+
+def test_ci_sync_all_and_packages_conflict(fakes):
+    ws, _, _ = fakes
+    result = runner.invoke(cli.app, ['ci', 'sync', '-w', str(ws.root), '--all', 'redump'])
+    assert result.exit_code == 2
+    assert 'either package names or --all' in result.output
+
+
+def test_ci_menu_include_skipped(fakes, interactive):
+    ws, _, _ = fakes
+    result = runner.invoke(cli.app, ['ci', '-w', str(ws.root), '--include-skipped'], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    assert 'datoso_seed_mameredump' in result.output

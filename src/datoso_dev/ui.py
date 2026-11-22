@@ -106,15 +106,24 @@ def ci_sync_table(results: list[CiResult], *, title: str) -> Table:
     table.add_column('Package', no_wrap=True)
     table.add_column('Result', no_wrap=True)
     table.add_column('Detail')
-    table.add_column('PR', overflow='fold', min_width=20)  # keep URLs whole (clickable) in narrow terminals
+    table.add_column('PR', overflow='fold', min_width=20)  # full URLs are printed below by print_pr_urls
     for result in results:
         table.add_row(
             result.package.name,
-            Text(
-                _planned.get(result.outcome, str(result.outcome)) if result.dry_run else str(result.outcome),
-                style=CI_OUTCOME_STYLE[result.outcome],
-            ),
+            Text(planned_label(result), style=CI_OUTCOME_STYLE[result.outcome]),
             result.detail,
             result.pr_url or '',
         )
     return table
+
+
+def planned_label(result: CiResult) -> str:
+    """Outcome wording: future tense for a dry run ('will open PR'), past tense otherwise."""
+    return _planned.get(result.outcome, str(result.outcome)) if result.dry_run else str(result.outcome)
+
+
+def print_pr_urls(console: Console, results: list[CiResult]) -> None:
+    """Print each PR URL on its own unwrapped line (tables would truncate or fold them)."""
+    for result in results:
+        if result.pr_url:
+            console.print(f'{result.package.name}: {result.pr_url}', soft_wrap=True, highlight=False)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated
@@ -13,17 +14,19 @@ from rich.console import Console
 
 from datoso_dev import __version__
 from datoso_dev.ci import CiOutcome, ci_status, ci_sync_all, ci_targets
+from datoso_dev.ci_menu import ci_menu
 from datoso_dev.io.gh import Gh
 from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
 from datoso_dev.ports import GhPort, GitPort, PyPIPort
+from datoso_dev.prompts import Prompter, QuestionaryPrompter
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states
 from datoso_dev.sync import Outcome, sync_all
-from datoso_dev.ui import ci_status_table, ci_sync_table, print_status, sync_table
+from datoso_dev.ui import ci_status_table, ci_sync_table, print_pr_urls, print_status, sync_table
 from datoso_dev.workspace import Workspace, WorkspaceError, discover, find_workspace_root
 
 app = typer.Typer(help='Release and maintenance tool for the datoso workspace.', no_args_is_help=True)
-ci_app = typer.Typer(help='Managed CI workflow for the plugin and seeds.', no_args_is_help=True)
+ci_app = typer.Typer(help='Managed CI workflow for the plugin and seeds. Without a subcommand: interactive menu.')
 app.add_typer(ci_app, name='ci')
 console = Console()
 
@@ -44,6 +47,16 @@ def make_pypi() -> PyPIPort:
 def make_gh() -> GhPort:
     """Real GitHub CLI adapter."""
     return Gh()
+
+
+def make_prompter() -> Prompter:
+    """Real terminal prompts."""
+    return QuestionaryPrompter()
+
+
+def is_interactive() -> bool:
+    """Whether we can prompt (stdin and stdout are terminals)."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def resolve_workspace(explicit: Path | None) -> Workspace:
@@ -144,8 +157,24 @@ def sync(
 
 
 IncludeSkippedOpt = Annotated[
-    bool, typer.Option('--include-skipped', help='Also target packages with [tool.datoso-dev] skip = true.')
+    bool, typer.Option('--include-skipped', help=r'Also target packages with \[tool.datoso-dev] skip = true.')
 ]
+
+
+def _run_ci_menu(workspace: Path | None, *, include_skipped: bool) -> None:
+    if not is_interactive():
+        console.print('[bold red]Error:[/] not a terminal: pass package names or --all (and --yes) to `ci sync`.')
+        raise typer.Exit(2)
+    ws = resolve_workspace(workspace)
+    code = ci_menu(ws, make_git(), make_gh(), make_prompter(), console, include_skipped=include_skipped)
+    raise typer.Exit(code)
+
+
+@ci_app.callback(invoke_without_command=True)
+def ci_main(ctx: typer.Context, workspace: WorkspaceOpt = None, include_skipped: IncludeSkippedOpt = False) -> None:
+    """Open the interactive menu when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        _run_ci_menu(workspace, include_skipped=include_skipped)
 
 
 @ci_app.command('status')
@@ -157,16 +186,29 @@ def ci_status_command(workspace: WorkspaceOpt = None, include_skipped: IncludeSk
 
 
 @ci_app.command('sync')
-def ci_sync_command(
+def ci_sync_command(  # noqa: PLR0913, PLR0917
     packages: Annotated[
-        list[str] | None, typer.Argument(help='Packages to target (default: all but core).', show_default=False)
+        list[str] | None,
+        typer.Argument(
+            help='Packages to target. Without names (and without --all): interactive menu.', show_default=False
+        ),
     ] = None,
     workspace: WorkspaceOpt = None,
+    all_packages: Annotated[bool, typer.Option('--all', help='Target every package except core.')] = False,
     include_skipped: IncludeSkippedOpt = False,
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Only check and report; change nothing.')] = False,
     yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
 ) -> None:
-    """Install or update the managed CI workflow in each repo, through a PR on branch datoso-dev/ci."""
+    """Install or update the managed CI workflow, through a PR on branch datoso-dev/ci.
+
+    Interactive by default: pick packages from a menu. ``PKG...`` or ``--all`` run directly (after one confirmation,
+    unless ``--yes``).
+    """
+    if packages and all_packages:
+        console.print('[bold red]Error:[/] pass either package names or --all, not both.')
+        raise typer.Exit(2)
+    if not packages and not all_packages and not dry_run:
+        _run_ci_menu(workspace, include_skipped=include_skipped)
     ws = resolve_workspace(workspace)
     try:
         targets = ci_targets(ws, include_skipped=include_skipped, only=packages or None)
@@ -189,8 +231,6 @@ def ci_sync_command(
     with console.status('Opening pull requests…', spinner='dots'):
         results = ci_sync_all(todo, git, gh)
     console.print(ci_sync_table(results, title='ci sync'))
-    for result in results:
-        if result.pr_url:
-            console.print(f'{result.package.name}: {result.pr_url}', soft_wrap=True, highlight=False)
+    print_pr_urls(console, results)
     if errors or any(r.outcome is CiOutcome.ERROR for r in results):
         raise typer.Exit(1)
