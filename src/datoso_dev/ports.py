@@ -63,11 +63,29 @@ class GitPort(Protocol):
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""
 
-    def pr_for_branch(self, repo: Path, head: str) -> str | None:
-        """URL of the open PR whose head is ``head``, or ``None``."""
+    def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
+        """URL of the PR in ``state`` (``open``, ``merged``) whose head is ``head``, or ``None``."""
 
     def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
         """Open a PR and return its URL."""
+
+    def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
+        """SHA of the commit a merged PR landed as."""
+
+    def release_url(self, repo: Path, tag: str) -> str | None:
+        """URL of the GitHub Release for ``tag``, or ``None``."""
+
+    def release_create(  # noqa: PLR0913
+        self,
+        repo: Path,
+        *,
+        tag: str,
+        target: str,
+        title: str,
+        notes_start_tag: str | None = None,
+        prerelease: bool = False,
+    ) -> str:
+        """Create ``tag`` at ``target`` and publish its GitHub Release; return its URL."""
 
 
 class PyPIPort(Protocol):
@@ -75,3 +93,6 @@ class PyPIPort(Protocol):
 
     def latest_version(self, dist_name: str) -> str | None:
         """Latest released version string, or ``None`` if the project isn't on PyPI."""
+
+    def has_version(self, dist_name: str, version: str) -> bool:
+        """Whether ``version`` of the project is published."""

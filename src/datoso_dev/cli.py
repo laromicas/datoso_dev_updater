@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import Counter
+from collections.abc import Iterable
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -18,13 +20,13 @@ from datoso_dev.ci_menu import ci_menu
 from datoso_dev.io.gh import Gh
 from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
-from datoso_dev.planner import PlanError, plan_release, released_version
+from datoso_dev.planner import Plan, PlanError, plan_release, released_version
 from datoso_dev.policy import violations
 from datoso_dev.ports import GhPort, GitPort, PyPIPort
 from datoso_dev.prompts import Prompter, QuestionaryPrompter
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
+from datoso_dev.release import Action, Probe, probe_releases, run_releases
 from datoso_dev.release import Outcome as ReleaseOutcome
-from datoso_dev.release import open_release_prs
 from datoso_dev.release_menu import choose_release, target_version
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states
 from datoso_dev.sync import Outcome, sync_all
@@ -268,7 +270,7 @@ def _collect(ws: Workspace, *, offline: bool = False) -> dict[str, PackageState]
 
 
 @app.command()
-def release(  # noqa: C901, PLR0912, PLR0913, PLR0917
+def release(  # noqa: PLR0913, PLR0917
     workspace: WorkspaceOpt = None,
     only: Annotated[
         str | None, typer.Option(help='Comma-separated packages (short names ok). Interactive: pre-selects them.')
@@ -280,11 +282,13 @@ def release(  # noqa: C901, PLR0912, PLR0913, PLR0917
     include_skipped: IncludeSkippedOpt = False,
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the plan and stop.')] = False,
     yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask; requires --only and --bump.')] = False,
+    no_wait: Annotated[bool, typer.Option('--no-wait', help='Do not wait for PyPI after publishing.')] = False,
 ) -> None:
-    """Release packages: pick packages and versions, review the plan, open the release PRs (step 1).
+    """Release packages: pick packages and versions, review the plan, then open PRs or publish releases.
 
-    Interactive by default. Later steps (packages depending on others in the batch) wait until step 1 is merged and
-    published; run `release` again then.
+    A release takes two runs: the first opens the release PR; merge it; the next run tags the merge commit, publishes
+    the GitHub Release (which uploads to PyPI) and waits for PyPI. Interactive by default. Later steps (packages
+    depending on others in the batch) wait until step 1 is published; run `release` again then.
     """
     ws = resolve_workspace(workspace)
     try:
@@ -311,29 +315,69 @@ def release(  # noqa: C901, PLR0912, PLR0913, PLR0917
     except (PlanError, VersionError) as exc:
         _fail(str(exc))
 
-    console.print(plan_table(plan))
+    probes = probe_releases(plan, ws, make_git(), make_gh())
+    console.print(plan_table(plan, probes))
     if dry_run:
         raise typer.Exit(0 if plan.ok else 1)
-    runnable = plan.runnable_now
-    if not runnable:
+    if not plan.runnable_now:
         _fail('nothing can be released now: every step-1 package is blocked.', 1)
     if plan.waiting:
         names = ', '.join(item.name for item in plan.waiting)
-        console.print(f'[yellow]{names} waits for step 1 to be merged and published; run `release` again then.[/]')
-    question = f'Open {len(runnable)} release PR(s)?'
+        console.print(f'[yellow]{names} waits for step 1 to be published; run `release` again then.[/]')
+    _execute_release(plan, probes, ws, states, prompter, wait=not no_wait)
+
+
+def _release_question(probes: dict[str, Probe]) -> str | None:
+    counts = Counter(probe.action for probe in probes.values())
+    parts = []
+    if counts[Action.OPEN_PR]:
+        parts.append(f'open {counts[Action.OPEN_PR]} release PR(s)')
+    if counts[Action.PUBLISH]:
+        parts.append(f'publish {counts[Action.PUBLISH]} release(s)')
+    question = ' and '.join(parts)
+    return f'{question[0].upper()}{question[1:]}?' if parts else None
+
+
+def _execute_release(  # noqa: PLR0913
+    plan: Plan,
+    probes: dict[str, Probe],
+    ws: Workspace,
+    states: dict[str, PackageState],
+    prompter: Prompter | None,
+    *,
+    wait: bool,
+) -> None:
+    question = _release_question(probes)
+    if question is None:
+        console.print('[yellow]Nothing to do now: merge the open release PR(s), then run `release` again.[/]')
+        _print_links(probe.pr_url for probe in probes.values())
+        raise typer.Exit(0 if plan.ok else 1)
     if prompter and not prompter.confirm(question, default=True):
         raise typer.Exit(0)
 
     def progress(name: str, message: str) -> None:
         console.print(f'  {name}: {message}', highlight=False)
 
-    results = open_release_prs(plan, ws, states, make_git(), make_gh(), on_progress=progress)
+    results = run_releases(
+        plan, probes, ws, states, make_git(), make_gh(), make_pypi(), wait=wait, on_progress=progress
+    )
     console.print(release_results_table(results))
     for result in results:
         if result.pr_url:
             console.print(f'{result.name}: {result.pr_url}', soft_wrap=True, highlight=False)
-    if not plan.ok or any(r.outcome is ReleaseOutcome.ERROR for r in results):
+    outcomes = {result.outcome for result in results}
+    if outcomes & {ReleaseOutcome.OPENED, ReleaseOutcome.ALREADY_OPEN}:
+        console.print('Merge the PR(s), then run `datoso-dev release` again to tag and publish.')
+    if outcomes & {ReleaseOutcome.PUBLISHED, ReleaseOutcome.PYPI_PENDING}:
+        console.print('Released. Next: `datoso-dev sync`, then commit the submodule pointers in the workspace.')
+    if not plan.ok or ReleaseOutcome.ERROR in outcomes:
         raise typer.Exit(1)
+
+
+def _print_links(urls: Iterable[str | None]) -> None:
+    for url in urls:
+        if url:
+            console.print(url, soft_wrap=True, highlight=False)
 
 
 @app.command('bump')

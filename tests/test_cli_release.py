@@ -17,6 +17,10 @@ runner = CliRunner()
 REDUMP = 'datoso_seed_redump'
 
 
+class Env(tuple):  # noqa: SLOT001 - (ws, git, gh), unpackable as before, plus the fake PyPI
+    pypi: FakePyPI
+
+
 @pytest.fixture
 def env(sample_workspace: Path, monkeypatch: pytest.MonkeyPatch):
     ws = discover(sample_workspace)
@@ -32,7 +36,9 @@ def env(sample_workspace: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cli, 'is_interactive', lambda: False)
     monkeypatch.delenv(cli.WORKSPACE_ENV, raising=False)
     monkeypatch.setattr(cli, 'console', Console(width=250))  # wide enough that plan rows don't wrap
-    return ws, git, gh
+    result = Env((ws, git, gh))
+    result.pypi = pypi
+    return result
 
 
 def invoke(ws, *args: str, **kwargs):
@@ -61,6 +67,50 @@ def test_release_yes_opens_step_one_prs(env):
     assert [pr['repo'].name for pr in gh.created] == ['datoso']  # redump waits for core to be published
     assert 'waits for step 1' in result.output
     assert 'https://github.com/owner/datoso/pull/1' in result.output
+    assert 'Merge the PR(s), then run `datoso-dev release` again' in result.output
+
+
+def test_release_dry_run_shows_what_each_package_needs(env):
+    ws, _, gh = env
+    gh.merged_prs[(ws.packages[REDUMP].path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/4'
+    result = invoke(ws, 'release', '--only', 'redump,enhanced', '--bump', 'patch', '--dry-run')
+    assert result.exit_code == 0, result.output
+    assert 'tag + publish release (PR merged: https://github.com/owner/r/pull/4)' in result.output
+    assert 'open release PR' in result.output
+    assert gh.releases_created == []
+
+
+def test_release_after_merge_publishes_and_waits_for_pypi(env):
+    ws, _, gh = env
+    redump = ws.packages[REDUMP]
+    gh.merged_prs[(redump.path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/4'
+    env.pypi.appears_after[(redump.dist_name, '1.0.2')] = 0  # listed once the publish workflow uploads it
+    result = invoke(ws, 'release', '--only', 'redump', '--bump', 'patch', '--yes')
+    assert result.exit_code == 0, result.output
+    assert [(r['tag'], r['target']) for r in gh.releases_created] == [('v1.0.2', 'sha-of-4')]
+    assert gh.created == []  # no duplicate PR
+    assert '1.0.2 on PyPI' in result.output
+    assert 'https://github.com/owner/datoso_seed_redump/releases/tag/v1.0.2' in result.output
+    assert 'datoso-dev sync' in result.output  # next step
+
+
+def test_release_no_wait(env):
+    ws, _, gh = env
+    gh.merged_prs[(ws.packages[REDUMP].path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/4'
+    result = invoke(ws, 'release', '--only', 'redump', '--bump', 'patch', '--yes', '--no-wait')
+    assert result.exit_code == 0, result.output
+    assert env.pypi.polls == []
+    assert 'PyPI upload not awaited' in result.output
+
+
+def test_release_with_only_open_prs_has_nothing_to_do(env):
+    ws, _, gh = env
+    gh.open_prs[(ws.packages[REDUMP].path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/9'
+    result = invoke(ws, 'release', '--only', 'redump', '--bump', 'patch', '--yes')
+    assert result.exit_code == 0, result.output
+    assert 'Nothing to do now' in result.output
+    assert 'https://github.com/owner/r/pull/9' in result.output
+    assert gh.created == []
 
 
 def test_release_non_interactive_needs_only_bump_and_yes(env):
@@ -109,6 +159,21 @@ def test_release_wizard_flow(env, monkeypatch: pytest.MonkeyPatch):
     assert result.exit_code == 0, result.output
     assert [pr['repo'].name for pr in gh.created] == [REDUMP]
     assert prompter.asked[-1][1] == 'Open 1 release PR(s)?'
+
+
+def test_release_wizard_question_names_the_actions(env, monkeypatch: pytest.MonkeyPatch):
+    ws, _, gh = env
+    gh.merged_prs[(ws.packages[REDUMP].path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/4'
+    env.pypi.appears_after[(ws.packages[REDUMP].dist_name, '1.0.2')] = 0
+    patch = lambda options: next(o.value for o in options if o.label.startswith('patch'))  # noqa: E731
+    prompter = FakePrompter([[REDUMP, 'datoso_seed_enhanced'], patch, patch, True])
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
+    result = invoke(ws, 'release')
+    assert result.exit_code == 0, result.output
+    assert prompter.asked[-1][1] == 'Open 1 release PR(s) and publish 1 release(s)?'
+    assert len(gh.releases_created) == 1
+    assert len(gh.created) == 1
 
 
 def test_release_wizard_decline(env, monkeypatch: pytest.MonkeyPatch):

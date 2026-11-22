@@ -1,12 +1,15 @@
-"""Release tasks up to "PR opened": branch, bump (version + dependency floors), commit, push, PR.
+"""Release tasks: open the release PR, then (once it is merged) tag, publish the GitHub Release and wait for PyPI.
 
-Every task checks whether it is already done, so re-running resumes instead of duplicating work:
-an open PR for the release branch means done; a release branch on origin that already carries the target version
-skips straight to opening the PR. A failed edit/commit restores the files, so the default branch is never left dirty.
+A release takes two runs of ``datoso-dev release`` with the merge in between. Each run first *probes* every package
+(:func:`probe_release`) to find what is left: no PR → open one; an open PR → merge it first; a merged PR → tag and
+publish; a GitHub Release for the tag → done. So re-running always resumes instead of duplicating work. Opening a PR
+is itself resumable (a release branch on origin that already carries the target version skips straight to the PR),
+and a failed edit/commit restores the files, so the default branch is never left dirty.
 """
 
 from __future__ import annotations
 
+import time
 import tomllib
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -16,23 +19,48 @@ from enum import StrEnum
 from packaging.version import InvalidVersion, Version
 
 from datoso_dev.planner import PackagePlan, Plan
-from datoso_dev.ports import GhError, GhPort, GitError, GitPort
+from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PyPIPort
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.state import DEFAULT_BRANCH, PackageState
 from datoso_dev.workspace import VERSION_LINE, Package, Workspace
 
 PYPROJECT = 'pyproject.toml'
+PYPI_TIMEOUT = 600.0  # seconds to wait for the publish workflow to upload
+PYPI_INTERVAL = 15.0
 
 Progress = Callable[[str], None]
 
 
 class Outcome(StrEnum):
-    """Result of trying to open one release PR."""
+    """What happened to one package."""
 
     OPENED = 'PR opened'
-    ALREADY_OPEN = 'PR already open'
+    ALREADY_OPEN = 'PR open'  # merge it, then run `release` again
+    MERGED = 'PR merged'  # only the tag + GitHub Release are left
+    PUBLISHED = 'released'
+    PYPI_PENDING = 'released, PyPI pending'
+    ALREADY_RELEASED = 'already released'
     NOTHING_TO_COMMIT = 'nothing to commit'
     ERROR = 'error'
+
+
+class Action(StrEnum):
+    """What a run will do for one package, found by :func:`probe_release`."""
+
+    OPEN_PR = 'open release PR'
+    WAIT_MERGE = 'PR open: merge it first'
+    PUBLISH = 'tag + publish release'
+    RELEASED = 'already released'
+    ERROR = 'error'
+
+
+@dataclass(frozen=True)
+class Probe:
+    """The next action for one package, and the PR it concerns."""
+
+    action: Action
+    pr_url: str | None = None
+    detail: str = ''
 
 
 @dataclass(frozen=True)
@@ -111,6 +139,10 @@ def open_release_pr(  # noqa: PLR0913
     try:
         report('fetching')
         git.fetch(repo)
+        merged = gh.pr_for_branch(repo, item.branch, state='merged')  # done, even if a duplicate is open
+        if merged:
+            detail = f'next: tag {item.tag} and publish its GitHub Release'
+            return ReleaseResult(item.name, Outcome.MERGED, detail, merged)
         existing = gh.pr_for_branch(repo, item.branch)
         if existing:
             return ReleaseResult(item.name, Outcome.ALREADY_OPEN, item.branch, existing)
@@ -153,30 +185,129 @@ def _commit_bump(item: PackagePlan, pkg: Package, git: GitPort, default_branch: 
     return True
 
 
-def open_release_prs(  # noqa: PLR0913
+def probe_release(item: PackagePlan, pkg: Package, git: GitPort, gh: GhPort) -> Probe:
+    """Find what is left to do for ``item`` (read-only: fetch + GitHub queries)."""
+    repo = pkg.path
+    try:
+        git.fetch(repo)
+        release = gh.release_url(repo, item.tag)
+        if release:
+            return Probe(Action.RELEASED, release)
+        merged = gh.pr_for_branch(repo, item.branch, state='merged')  # wins over a stale duplicate that is open
+        if merged:
+            return Probe(Action.PUBLISH, merged)
+        existing = gh.pr_for_branch(repo, item.branch)
+        if existing:
+            return Probe(Action.WAIT_MERGE, existing)
+    except (GitError, GhError, OSError) as exc:
+        return Probe(Action.ERROR, detail=str(exc))
+    return Probe(Action.OPEN_PR)
+
+
+def probe_releases(plan: Plan, ws: Workspace, git: GitPort, gh: GhPort, *, workers: int = 8) -> dict[str, Probe]:
+    """Probe the runnable packages of ``plan`` in parallel."""
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        probes = pool.map(lambda item: probe_release(item, ws.packages[item.name], git, gh), plan.runnable_now)
+        return {item.name: probe for item, probe in zip(plan.runnable_now, probes, strict=True)}
+
+
+def wait_for_pypi(  # noqa: PLR0913
+    pypi: PyPIPort,
+    dist_name: str,
+    version: str,
+    *,
+    timeout: float = PYPI_TIMEOUT,
+    interval: float = PYPI_INTERVAL,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Poll PyPI until ``version`` is listed; ``False`` after ``timeout`` seconds. Network errors just retry."""
+    deadline = clock() + timeout
+    while True:
+        try:
+            if pypi.has_version(dist_name, version):
+                return True
+        except (OSError, ValueError):
+            pass
+        if clock() >= deadline:
+            return False
+        sleep(interval)
+
+
+def publish_release(  # noqa: PLR0913
+    item: PackagePlan,
+    pkg: Package,
+    gh: GhPort,
+    pypi: PyPIPort,
+    *,
+    pr_url: str,
+    since: str | None,
+    wait: bool = True,
+    progress: Progress | None = None,
+    timeout: float = PYPI_TIMEOUT,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> ReleaseResult:
+    """Tag the merge commit of the release PR, publish its GitHub Release and (PyPI packages) wait for the upload."""
+    report = progress or (lambda _msg: None)
+    repo = pkg.path
+    try:
+        target = gh.pr_merge_commit(repo, pr_url)
+        report(f'publishing GitHub Release {item.tag}')
+        url = gh.release_create(
+            repo,
+            tag=item.tag,
+            target=target,
+            title=item.tag,
+            notes_start_tag=since,
+            prerelease=item.target.is_prerelease,
+        )
+    except (GhError, OSError) as exc:
+        return ReleaseResult(item.name, Outcome.ERROR, str(exc))
+    if not pkg.pypi:
+        return ReleaseResult(item.name, Outcome.PUBLISHED, 'GitHub Release (not published to PyPI)', url)
+    if not wait:
+        return ReleaseResult(item.name, Outcome.PUBLISHED, 'GitHub Release; PyPI upload not awaited', url)
+    report('waiting for PyPI')
+    if wait_for_pypi(pypi, pkg.dist_name, str(item.target), timeout=timeout, sleep=sleep, clock=clock):
+        return ReleaseResult(item.name, Outcome.PUBLISHED, f'GitHub Release; {item.target} on PyPI', url)
+    minutes = round(timeout / 60)
+    detail = f'{item.target} not on PyPI after {minutes} min: check the publish workflow (Actions tab)'
+    return ReleaseResult(item.name, Outcome.PYPI_PENDING, detail, url)
+
+
+def run_releases(  # noqa: PLR0913, PLR0917
     plan: Plan,
+    probes: Mapping[str, Probe],
     ws: Workspace,
     states: Mapping[str, PackageState],
     git: GitPort,
     gh: GhPort,
+    pypi: PyPIPort,
     *,
+    wait: bool = True,
     on_progress: Callable[[str, str], None] | None = None,
     default_branch: str = DEFAULT_BRANCH,
     workers: int = 8,
 ) -> list[ReleaseResult]:
-    """Open release PRs for the runnable packages of ``plan`` (step 1, unblocked), in parallel."""
+    """Do the probed action for every runnable package of ``plan``, in parallel."""
     notify = on_progress or (lambda _name, _msg: None)
 
     def run(item: PackagePlan) -> ReleaseResult:
-        result = open_release_pr(
-            item,
-            ws.packages[item.name],
-            git,
-            gh,
-            since=states[item.name].last_tag,
-            default_branch=default_branch,
-            progress=lambda msg: notify(item.name, msg),
-        )
+        pkg, probe, since = ws.packages[item.name], probes[item.name], states[item.name].last_tag
+        progress = lambda msg: notify(item.name, msg)  # noqa: E731
+        if probe.action is Action.OPEN_PR:
+            result = open_release_pr(item, pkg, git, gh, since=since, default_branch=default_branch, progress=progress)
+        elif probe.action is Action.PUBLISH:
+            result = publish_release(
+                item, pkg, gh, pypi, pr_url=probe.pr_url or '', since=since, wait=wait, progress=progress
+            )
+        elif probe.action is Action.WAIT_MERGE:
+            result = ReleaseResult(item.name, Outcome.ALREADY_OPEN, 'merge it, then run `release` again', probe.pr_url)
+        elif probe.action is Action.RELEASED:
+            result = ReleaseResult(item.name, Outcome.ALREADY_RELEASED, item.tag, probe.pr_url)
+        else:
+            result = ReleaseResult(item.name, Outcome.ERROR, probe.detail)
         notify(item.name, str(result.outcome))
         return result
 

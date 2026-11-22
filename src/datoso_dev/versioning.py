@@ -96,6 +96,6 @@ def bump_choices(current: Version, *, released: Version | None, pre: str | None 
     start = released or current
     for part in (Part.PATCH, Part.MINOR, Part.MAJOR):
         version = bump(start, part, pre=pre)
-        if all(choice.version != version for choice in choices):
+        if version >= current and all(choice.version != version for choice in choices):  # never a downgrade
             choices.append(Choice(part, version))
     return choices
