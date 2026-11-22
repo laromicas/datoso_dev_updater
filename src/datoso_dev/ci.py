@@ -19,6 +19,7 @@ from datoso_dev.workspace import CORE, Package, Workspace, WorkspaceError
 WORKFLOW_PATH = Path('.github/workflows/ci.yml')
 CI_BRANCH = 'datoso-dev/ci'
 SEED_PREFIX = 'datoso_seed_'
+PLUGIN_PREFIX = 'datoso_plugin_'
 
 _SEED_STEPS = """\
       - name: datoso doctor
@@ -49,6 +50,7 @@ class CiOutcome(StrEnum):
     UP_TO_DATE = 'up to date'
     OPENED = 'PR opened'
     UPDATED = 'PR updated'
+    PR_OPEN = 'PR open'  # an open PR already carries the current template: nothing to push
     SKIPPED = 'skipped'
     ERROR = 'error'
 
@@ -78,7 +80,7 @@ def render_ci(pkg: Package, template: str | None = None) -> str:
 
 
 def _resolve(ws: Workspace, name: str) -> str:
-    for candidate in (name, f'{SEED_PREFIX}{name}'):
+    for candidate in (name, f'{SEED_PREFIX}{name}', f'{PLUGIN_PREFIX}{name}'):
         if candidate in ws.packages:
             return candidate
     msg = f'unknown package: {name}'
@@ -142,16 +144,21 @@ def ci_sync(
         if status is CiStatus.UP_TO_DATE:
             return CiResult(pkg, CiOutcome.UP_TO_DATE, dry_run=dry_run)
         existing = gh.pr_for_branch(repo, CI_BRANCH)
+        detail = f'workflow {status}'
+        if existing:
+            if git.show_file(repo, f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)) == render_ci(pkg):
+                return CiResult(pkg, CiOutcome.PR_OPEN, 'waiting for merge', existing, dry_run=dry_run)
+            detail = 'PR branch outdated'
         outcome = CiOutcome.UPDATED if existing else CiOutcome.OPENED
         verb = 'add' if status is CiStatus.MISSING else 'update'
         title = f'CI: {verb} datoso-dev managed workflow'
         if dry_run:
-            return CiResult(pkg, outcome, f'workflow {status}', existing, dry_run=True)
+            return CiResult(pkg, outcome, detail, existing, dry_run=True)
         _commit_workflow(pkg, git, title, default_branch)
         url = existing or gh.pr_create(repo, base=default_branch, head=CI_BRANCH, title=title, body=_PR_BODY)
     except (GitError, GhError) as exc:
         return CiResult(pkg, CiOutcome.ERROR, str(exc), dry_run=dry_run)
-    return CiResult(pkg, outcome, f'workflow {status}', url)
+    return CiResult(pkg, outcome, detail, url)
 
 
 def _commit_workflow(pkg: Package, git: GitPort, message: str, default_branch: str) -> None:

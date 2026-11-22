@@ -49,6 +49,9 @@ def test_only_actionable_packages_are_selectable(env):
         ),
         CiResult(pkgs['datoso_seed_base'], CiOutcome.UP_TO_DATE, dry_run=True),
         CiResult(pkgs['datoso_plugin_internetarchive'], CiOutcome.SKIPPED, 'uncommitted changes', dry_run=True),
+        CiResult(
+            pkgs['datoso_seed_mameredump'], CiOutcome.PR_OPEN, 'waiting for merge', 'https://x/pull/3', dry_run=True
+        ),
     ]
     options = selection_options(results)
     assert [(o.value, o.disabled) for o in options] == [
@@ -56,6 +59,7 @@ def test_only_actionable_packages_are_selectable(env):
         (pkgs['datoso_seed_enhanced'], None),
         (pkgs['datoso_seed_base'], 'up to date'),
         (pkgs['datoso_plugin_internetarchive'], 'skipped: uncommitted changes'),
+        (pkgs['datoso_seed_mameredump'], 'PR open: waiting for merge'),
     ]
     assert 'will open PR' in options[0].label
     assert 'will update PR' in options[1].label

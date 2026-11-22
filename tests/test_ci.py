@@ -70,6 +70,11 @@ def test_targets_include_skipped(sample_workspace: Path):
     assert 'datoso_seed_mameredump' in [p.name for p in ci_targets(ws, include_skipped=True)]
 
 
+def test_targets_short_name_for_plugin(sample_workspace: Path):
+    ws = discover(sample_workspace)
+    assert [p.name for p in ci_targets(ws, only=['internetarchive'])] == ['datoso_plugin_internetarchive']
+
+
 def test_targets_only_selected(sample_workspace: Path):
     ws = discover(sample_workspace)
     assert [p.name for p in ci_targets(ws, only=['datoso_seed_redump', 'base'])] == [
@@ -213,3 +218,28 @@ def test_lint_rules_are_explicit(sample_workspace: Path):
     """
     text = render_ci(discover(sample_workspace).packages['datoso_seed_redump'])
     assert 'run: ruff check --isolated --select E4,E7,E9,F .' in text
+
+
+# --------------------------------------------------------------------------- open PR already current
+
+
+def test_open_pr_already_current_is_not_actionable(redump):
+    url = 'https://github.com/owner/datoso_seed_redump/pull/7'
+    repo = FakeRepo(files={(f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)): render_ci(redump)})
+    git, gh = FakeGit({redump.path: repo}), FakeGh({(redump.path, CI_BRANCH): url})
+    result = ci_sync(redump, git, gh)
+    assert result.outcome is CiOutcome.PR_OPEN
+    assert result.pr_url == url
+    assert 'waiting for merge' in result.detail
+    assert git.commits == []
+    assert git.pushes == []
+
+
+def test_open_pr_with_stale_workflow_is_updated(redump):
+    url = 'https://github.com/owner/datoso_seed_redump/pull/7'
+    repo = FakeRepo(files={(f'origin/{CI_BRANCH}', str(WORKFLOW_PATH)): 'old\n'})
+    git, gh = FakeGit({redump.path: repo}), FakeGh({(redump.path, CI_BRANCH): url})
+    result = ci_sync(redump, git, gh)
+    assert result.outcome is CiOutcome.UPDATED
+    assert 'PR branch outdated' in result.detail
+    assert git.pushes == [(redump.path, CI_BRANCH, True)]

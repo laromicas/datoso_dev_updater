@@ -19,6 +19,7 @@ class FakeRepo:
     commits_since: dict[str | None, int] = field(default_factory=dict)  # since-ref -> count
     branches: set[str] = field(default_factory=lambda: {'master'})
     fail_on: set[str] = field(default_factory=set)  # method names that raise GitError
+    files: dict[tuple[str, str], str] = field(default_factory=dict)  # (ref, path) -> content
 
 
 class FakeGit:
@@ -80,6 +81,9 @@ class FakeGit:
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         self._repo('push', repo)
         self.pushes.append((repo, branch, force))
+
+    def show_file(self, repo: Path, ref: str, path: str) -> str | None:
+        return self._repo('show_file', repo).files.get((ref, path))
 
     def called(self, method: str) -> list[Path]:
         return [repo for name, repo in self.calls if name == method]

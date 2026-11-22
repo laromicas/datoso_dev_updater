@@ -158,3 +158,11 @@ def test_commit_paths_only_commits_given_paths(remote_pair):
     (work / 'b.txt').write_text('b')
     git.commit_paths(work, ['a.txt'], 'add a')
     assert git.changed_files(work) == ['b.txt']
+
+
+def test_show_file_at_ref(remote_pair):
+    _, work, _ = remote_pair
+    git = Git()
+    assert git.show_file(work, 'origin/master', 'README.md') == 'x'
+    assert git.show_file(work, 'origin/master', 'missing.txt') is None
+    assert git.show_file(work, 'origin/no-such-branch', 'README.md') is None
