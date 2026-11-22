@@ -42,7 +42,7 @@ Doing everything at once is opt-in: `ci sync --all`. Without a terminal (scripts
 For each selected package it commits the workflow on branch `datoso-dev/ci`, force-pushes it, and opens a PR (or just
 updates the branch when a PR is already open). It only touches repos that are clean, on `master` and in sync with
 `origin`. Targets: the plugin and every seed (core keeps its own `pytest.yml`; skipped packages need
-`--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check`,
+`--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check` (pyflakes rules only),
 import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` directory exists.
 
 ## Development

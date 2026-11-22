@@ -203,3 +203,12 @@ def test_sync_commit_failure_restores_previous_workflow(redump):
     git, gh = FakeGit({redump.path: FakeRepo(fail_on={'commit_paths'})}), FakeGh()
     ci_sync(redump, git, gh)
     assert (redump.path / WORKFLOW_PATH).read_text() == 'old\n'
+
+
+def test_lint_rules_are_explicit(sample_workspace: Path):
+    """Lint must not depend on ruff's defaults (they grow between releases) nor on the workspace's ALL config.
+
+    Only pyflakes + syntax errors: real bugs, and no RUF100 clash with the workspace's ``# noqa`` comments.
+    """
+    text = render_ci(discover(sample_workspace).packages['datoso_seed_redump'])
+    assert 'run: ruff check --isolated --select E4,E7,E9,F .' in text
