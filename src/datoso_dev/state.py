@@ -18,7 +18,10 @@ DEFAULT_BRANCH = 'master'
 class Status(StrEnum):
     """Release status of a package."""
 
-    NEEDS_RELEASE = 'needs release'
+    NEEDS_RELEASE = 'needs release'  # unreleased commits; the version still has to be bumped
+    READY = 'ready to release'  # version already ahead of the last release: only tag + publish missing
+    FIRST_RELEASE = 'first release'  # never tagged nor published (its first PyPI upload creates the project)
+    TEMPLATE = 'template'  # release = false: copied by init.sh, never released
     UP_TO_DATE = 'up to date'
     SKIPPED = 'skipped'
     ERROR = 'error'
@@ -48,9 +51,30 @@ class PackageState:
             return Status.ERROR
         if self.package.skip:
             return Status.SKIPPED
-        if self.commits_since_tag > 0:
-            return Status.NEEDS_RELEASE
-        return Status.UP_TO_DATE
+        if not self.package.release:
+            return Status.TEMPLATE
+        return self._release_status()
+
+    def _release_status(self) -> Status:
+        released = released_version(self)
+        if released is None:
+            return Status.FIRST_RELEASE
+        if self.package.version > released:
+            return Status.READY
+        return Status.NEEDS_RELEASE if self.commits_since_tag > 0 else Status.UP_TO_DATE
+
+    @property
+    def pending(self) -> bool:
+        """Whether the package has something to release."""
+        return self.status in {Status.NEEDS_RELEASE, Status.READY, Status.FIRST_RELEASE}
+
+
+def released_version(state: PackageState) -> Version | None:
+    """Latest release of a package: the newest of its last tag and (for PyPI packages) its PyPI version."""
+    candidates = [state.last_tag_version]
+    if state.package.pypi:
+        candidates.append(state.pypi_version)
+    return max((v for v in candidates if v is not None), default=None)
 
 
 def latest_release_tag(tags: Iterable[str]) -> tuple[str, Version] | None:
@@ -82,8 +106,6 @@ def assess(state: PackageState, *, default_branch: str = DEFAULT_BRANCH, query_p
             issues.append(f'{state.ahead} unpushed commit(s)')
     if state.last_tag_version and state.package.version < state.last_tag_version:
         issues.append(f'version {state.package.version} is older than tag {state.last_tag}')
-    elif state.last_tag_version and state.package.version > state.last_tag_version:
-        issues.append(f'version {state.package.version} bumped but not tagged (last {state.last_tag})')
     if query_pypi and _published(state.package):
         issues.extend(_pypi_issues(state))
     if not state.package.pypi and state.package.publishes_to_pypi:
@@ -100,7 +122,7 @@ def _pypi_issues(state: PackageState) -> list[str]:
     if state.pypi_error:
         return [f'PyPI unavailable: {state.pypi_error}']
     if state.pypi_version is None:
-        return ['not on PyPI']
+        return [f'{state.last_tag} tagged but not on PyPI'] if state.last_tag else []  # else: first release
     if state.last_tag_version and state.pypi_version < state.last_tag_version:
         return [f'{state.last_tag} tagged but PyPI has {state.pypi_version} (publish failed?)']
     return []

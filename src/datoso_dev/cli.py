@@ -7,7 +7,7 @@ import os
 import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -18,12 +18,28 @@ from datoso_dev.ci_menu import ci_menu
 from datoso_dev.io.gh import Gh
 from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
+from datoso_dev.planner import PlanError, plan_release, released_version
+from datoso_dev.policy import violations
 from datoso_dev.ports import GhPort, GitPort, PyPIPort
 from datoso_dev.prompts import Prompter, QuestionaryPrompter
+from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
+from datoso_dev.release import Outcome as ReleaseOutcome
+from datoso_dev.release import open_release_prs
+from datoso_dev.release_menu import choose_release, target_version
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states
 from datoso_dev.sync import Outcome, sync_all
-from datoso_dev.ui import ci_status_table, ci_sync_table, print_pr_urls, print_status, sync_table
-from datoso_dev.workspace import Workspace, WorkspaceError, discover, find_workspace_root
+from datoso_dev.ui import (
+    ci_status_table,
+    ci_sync_table,
+    deps_table,
+    plan_table,
+    print_pr_urls,
+    print_status,
+    release_results_table,
+    sync_table,
+)
+from datoso_dev.versioning import Part, VersionError, bump
+from datoso_dev.workspace import Workspace, WorkspaceError, discover, find_workspace_root, resolve_name
 
 app = typer.Typer(help='Release and maintenance tool for the datoso workspace.', no_args_is_help=True)
 ci_app = typer.Typer(help='Managed CI workflow for the plugin and seeds. Without a subcommand: interactive menu.')
@@ -116,6 +132,7 @@ def _state_json(state: PackageState) -> dict:
         'behind': state.behind,
         'changed_files': list(state.changed_files),
         'skip': state.package.skip,
+        'release': state.package.release,
         'status': str(state.status),
         'issues': state.issues,
         'error': state.error,
@@ -234,3 +251,134 @@ def ci_sync_command(  # noqa: PLR0913, PLR0917
     print_pr_urls(console, results)
     if errors or any(r.outcome is CiOutcome.ERROR for r in results):
         raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- release / bump / deps
+
+
+def _fail(message: str, code: int = 2) -> NoReturn:
+    console.print(f'[bold red]Error:[/] {message}')
+    raise typer.Exit(code)
+
+
+def _collect(ws: Workspace, *, offline: bool = False) -> dict[str, PackageState]:
+    with console.status('Collecting repository state…', spinner='dots'):
+        states = collect_states(ws, make_git(), make_pypi(), fetch=not offline, query_pypi=not offline)
+    return {state.package.name: state for state in states}
+
+
+@app.command()
+def release(  # noqa: C901, PLR0912, PLR0913, PLR0917
+    workspace: WorkspaceOpt = None,
+    only: Annotated[
+        str | None, typer.Option(help='Comma-separated packages (short names ok). Interactive: pre-selects them.')
+    ] = None,
+    bump_part: Annotated[
+        Part | None, typer.Option('--bump', help='Version bump for every selected package (skips the questions).')
+    ] = None,
+    pre: Annotated[str | None, typer.Option(help='Pre-release label: a, b or rc.')] = None,
+    include_skipped: IncludeSkippedOpt = False,
+    dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the plan and stop.')] = False,
+    yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask; requires --only and --bump.')] = False,
+) -> None:
+    """Release packages: pick packages and versions, review the plan, open the release PRs (step 1).
+
+    Interactive by default. Later steps (packages depending on others in the batch) wait until step 1 is merged and
+    published; run `release` again then.
+    """
+    ws = resolve_workspace(workspace)
+    try:
+        only_names = [resolve_name(ws, n.strip()) for n in only.split(',') if n.strip()] if only else None
+    except WorkspaceError as exc:
+        _fail(str(exc))
+    interactive = is_interactive() and not yes
+    if not interactive and not (only_names and bump_part and (yes or dry_run)):
+        _fail('not a terminal: pass --only, --bump and --yes (or --dry-run).')
+
+    states = _collect(ws)
+    print_status(console, list(states.values()))
+    prompter = make_prompter() if interactive else None
+    try:
+        if prompter:
+            selection = choose_release(
+                ws, states, prompter, console, only=only_names, part=bump_part, pre=pre, include_skipped=include_skipped
+            )
+            if selection is None:
+                raise typer.Exit(0)
+        else:
+            selection = {name: target_version(states[name], bump_part, pre) for name in only_names}
+        plan = plan_release(ws, states, selection, include_skipped=include_skipped)
+    except (PlanError, VersionError) as exc:
+        _fail(str(exc))
+
+    console.print(plan_table(plan))
+    if dry_run:
+        raise typer.Exit(0 if plan.ok else 1)
+    runnable = plan.runnable_now
+    if not runnable:
+        _fail('nothing can be released now: every step-1 package is blocked.', 1)
+    if plan.waiting:
+        names = ', '.join(item.name for item in plan.waiting)
+        console.print(f'[yellow]{names} waits for step 1 to be merged and published; run `release` again then.[/]')
+    question = f'Open {len(runnable)} release PR(s)?'
+    if prompter and not prompter.confirm(question, default=True):
+        raise typer.Exit(0)
+
+    def progress(name: str, message: str) -> None:
+        console.print(f'  {name}: {message}', highlight=False)
+
+    results = open_release_prs(plan, ws, states, make_git(), make_gh(), on_progress=progress)
+    console.print(release_results_table(results))
+    for result in results:
+        if result.pr_url:
+            console.print(f'{result.name}: {result.pr_url}', soft_wrap=True, highlight=False)
+    if not plan.ok or any(r.outcome is ReleaseOutcome.ERROR for r in results):
+        raise typer.Exit(1)
+
+
+@app.command('bump')
+def bump_command(
+    package: Annotated[str, typer.Argument(help='Package (short names ok).')],
+    part: Annotated[Part, typer.Argument(help='patch, minor or major.')],
+    workspace: WorkspaceOpt = None,
+    pre: Annotated[str | None, typer.Option(help='Pre-release label: a, b or rc.')] = None,
+) -> None:
+    """Bump a package's version in the working tree only (no git, no dependency floors)."""
+    ws = resolve_workspace(workspace)
+    try:
+        pkg = ws.packages[resolve_name(ws, package)]
+        new = pkg.version if part is Part.KEEP else bump(pkg.version, part, pre=pre)
+    except (WorkspaceError, VersionError) as exc:
+        _fail(str(exc))
+    target = pkg.version_file or pkg.path / 'pyproject.toml'
+    setter = set_init_version if pkg.version_file else set_project_version
+    target.write_text(setter(target.read_text(encoding='utf-8'), new), encoding='utf-8')
+    console.print(f'{pkg.name}: {pkg.version} → {new}', highlight=False)
+
+
+@app.command()
+def deps(
+    workspace: WorkspaceOpt = None,
+    fix: Annotated[bool, typer.Option('--fix', help='Raise the floors in the working tree (no git).')] = False,
+    offline: Annotated[bool, typer.Option('--offline', help='Use git tags only (no fetch, no PyPI).')] = False,
+    include_skipped: IncludeSkippedOpt = False,
+) -> None:
+    """Show dependency floors that lag behind the latest released core / IA plugin."""
+    ws = resolve_workspace(workspace)
+    states = _collect(ws, offline=offline)
+    released = {name: released_version(state) for name, state in states.items()}
+    found = violations(ws, released, include_skipped=include_skipped)
+    if not found:
+        console.print('[green]Every floor follows the latest release.[/]')
+        return
+    console.print(deps_table(found))
+    if not fix:
+        console.print('Run `datoso-dev deps --fix` to raise them in the working tree.')
+        raise typer.Exit(1)
+    for name, changes in found.items():
+        path = ws.packages[name].path / 'pyproject.toml'
+        text = path.read_text(encoding='utf-8')
+        for change in changes:
+            text, _ = set_floor(text, change.dist, change.target)
+        path.write_text(text, encoding='utf-8')
+    console.print(f'[green]Raised floors in {len(found)} package(s).[/] Review with git diff and release them.')

@@ -166,3 +166,24 @@ def test_show_file_at_ref(remote_pair):
     assert git.show_file(work, 'origin/master', 'README.md') == 'x'
     assert git.show_file(work, 'origin/master', 'missing.txt') is None
     assert git.show_file(work, 'origin/no-such-branch', 'README.md') is None
+
+
+def test_create_branch_from_start_point(remote_pair):
+    _, work, other = remote_pair
+    commit(other, 'upstream.txt')
+    sh(other, 'push', '-q', 'origin', 'master')
+    git = Git()
+    git.fetch(work)
+    git.create_branch(work, 'release/v1.0.1', start='origin/master')
+    assert (work / 'upstream.txt').exists()  # started from origin/master, not the stale local master
+    assert git.current_branch(work) == 'release/v1.0.1'
+
+
+def test_log_subjects(remote_pair):
+    _, work, _ = remote_pair
+    git = Git()
+    sh(work, 'tag', 'v1.0.0')
+    commit(work, 'a.txt')
+    commit(work, 'b.txt')
+    assert git.log_subjects(work, since='v1.0.0', rev='HEAD') == ['add b.txt', 'add a.txt']
+    assert git.log_subjects(work, since=None, rev='HEAD') == ['add b.txt', 'add a.txt', 'add README.md']

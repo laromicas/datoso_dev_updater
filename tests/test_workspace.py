@@ -257,7 +257,9 @@ def test_pypi_flag_defaults_true_and_can_be_disabled(sample_workspace: Path):
     ws = discover(sample_workspace)
     assert ws.packages['datoso_seed_redump'].pypi is True
     assert ws.packages['datoso_seed_base'].pypi is False
-    assert ws.packages['datoso_seed_base'].skip is False  # released on GitHub, just not on PyPI
+    assert ws.packages['datoso_seed_base'].skip is False  # still CI-managed and floor-checked
+    assert ws.packages['datoso_seed_base'].release is False  # template: never released
+    assert ws.packages['datoso_seed_redump'].release is True
 
 
 def test_publish_workflow_detection(tmp_path: Path):
@@ -293,3 +295,11 @@ def test_publish_workflow_repository_guard(tmp_path: Path, repo: str, expected: 
     (pkg / '.github' / 'workflows').mkdir(parents=True)
     (pkg / '.github' / 'workflows' / 'python-publish.yml').write_text(GUARDED_WORKFLOW.format(repo=repo))
     assert has_publish_workflow(pkg) is expected
+
+
+def test_optional_dependencies_are_loaded(sample_workspace: Path):
+    core = discover(sample_workspace).packages['datoso']
+    assert [(extra, [str(r) for r in reqs]) for extra, reqs in core.extras] == [
+        ('redump', ['datoso-seed-redump>=1.0.1']),
+    ]
+    hash(core)  # Package stays hashable (used as a prompt value)

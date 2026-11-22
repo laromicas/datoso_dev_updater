@@ -7,11 +7,18 @@ from rich.table import Table
 from rich.text import Text
 
 from datoso_dev.ci import CiOutcome, CiResult, CiStatus
+from datoso_dev.planner import Plan
+from datoso_dev.policy import FloorChange
+from datoso_dev.release import Outcome as ReleaseOutcome
+from datoso_dev.release import ReleaseResult
 from datoso_dev.state import PackageState, Status
 from datoso_dev.sync import Outcome, SyncResult
 
 STATUS_STYLE = {
     Status.NEEDS_RELEASE: 'bold yellow',
+    Status.READY: 'bold cyan',
+    Status.FIRST_RELEASE: 'bold magenta',
+    Status.TEMPLATE: 'dim',
     Status.UP_TO_DATE: 'green',
     Status.SKIPPED: 'dim',
     Status.ERROR: 'bold red',
@@ -49,7 +56,7 @@ def status_table(states: list[PackageState]) -> Table:
         table.add_column(column, no_wrap=column in {'Package', 'Status'})
     for state in states:
         status = state.status
-        unreleased = '' if state.error else (str(state.commits_since_tag) if state.commits_since_tag else EMPTY)
+        unreleased = '' if state.error or status is Status.TEMPLATE else str(state.commits_since_tag or EMPTY)
         issues = state.error or '; '.join(state.issues)
         table.add_row(
             state.package.name,
@@ -67,7 +74,7 @@ def status_table(states: list[PackageState]) -> Table:
 def print_status(console: Console, states: list[PackageState]) -> None:
     """Print the dashboard plus a one-line summary."""
     console.print(status_table(states))
-    pending = [s.package.name for s in states if s.status is Status.NEEDS_RELEASE]
+    pending = [s.package.name for s in states if s.pending]
     errors = [s.package.name for s in states if s.status is Status.ERROR]
     if pending:
         console.print(f'[bold yellow]{len(pending)} package(s) need a release:[/] {", ".join(pending)}')
@@ -128,3 +135,69 @@ def print_pr_urls(console: Console, results: list[CiResult]) -> None:
     for result in results:
         if result.pr_url:
             console.print(f'{result.package.name}: {result.pr_url}', soft_wrap=True, highlight=False)
+
+
+def floor_text(change: FloorChange) -> str:
+    """``datoso>=1.1.0 → datoso>=1.1.1`` (with ``[extra]`` for core extras)."""
+    before = f'{change.dist}>={change.current}' if change.current else change.dist
+    extra = f'[{change.extra}] ' if change.extra else ''
+    return f'{extra}{before} → {change.dist}>={change.target}'
+
+
+def plan_table(plan: Plan) -> Table:
+    """Render the release plan: one row per package, in step order."""
+    table = Table(title='Release plan', title_justify='left', header_style='bold')
+    for column in ('Step', 'Package', 'Version', 'Dependency floors', 'Status'):
+        table.add_column(column, no_wrap=column in {'Step', 'Package', 'Version'})
+    first = {item.name for item in plan.steps[0]}
+    for item in plan.items:
+        if item.blockers:
+            status = Text('blocked: ' + '; '.join(item.blockers), style='bold red')
+        elif item.name in first:
+            status = Text('ready', style='green')
+        else:
+            status = Text('waits for step 1 to be merged and published', style='yellow')
+        table.add_row(
+            str(item.step),
+            item.name,
+            f'{item.released or "unreleased"} → {item.target}',
+            Text('\n'.join(floor_text(c) for c in item.floor_changes) or EMPTY),  # Text: no markup ([extra])
+            status,
+        )
+    if plan.extras:
+        table.add_row(
+            'then',
+            'datoso (core extras)',
+            EMPTY,
+            Text('\n'.join(floor_text(c) for c in plan.extras)),
+            Text('direct commit to core master after the releases (phase 4)', style='dim'),
+        )
+    return table
+
+
+RELEASE_STYLE = {
+    ReleaseOutcome.OPENED: 'green',
+    ReleaseOutcome.ALREADY_OPEN: 'green',
+    ReleaseOutcome.NOTHING_TO_COMMIT: 'yellow',
+    ReleaseOutcome.ERROR: 'bold red',
+}
+
+
+def release_results_table(results: list[ReleaseResult]) -> Table:
+    """Outcome per package after opening release PRs."""
+    table = Table(title='release', title_justify='left', header_style='bold')
+    for column in ('Package', 'Result', 'Detail'):
+        table.add_column(column, no_wrap=column != 'Detail')
+    for result in results:
+        table.add_row(result.name, Text(str(result.outcome), style=RELEASE_STYLE[result.outcome]), Text(result.detail))
+    return table
+
+
+def deps_table(found: dict[str, list[FloorChange]]) -> Table:
+    """Dependency floors that lag behind the latest released core / IA plugin."""
+    table = Table(title='Dependency floors behind the latest release', title_justify='left', header_style='bold')
+    table.add_column('Package', no_wrap=True)
+    table.add_column('Floor')
+    for name, changes in found.items():
+        table.add_row(name, Text('\n'.join(floor_text(c) for c in changes)))
+    return table

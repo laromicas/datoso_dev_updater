@@ -14,12 +14,11 @@ from pathlib import Path
 
 from datoso_dev.ports import GhError, GhPort, GitError, GitPort
 from datoso_dev.state import DEFAULT_BRANCH
-from datoso_dev.workspace import CORE, Package, Workspace, WorkspaceError
+from datoso_dev.workspace import CORE, Package, Workspace, WorkspaceError, resolve_name
 
 WORKFLOW_PATH = Path('.github/workflows/ci.yml')
 CI_BRANCH = 'datoso-dev/ci'
 SEED_PREFIX = 'datoso_seed_'
-PLUGIN_PREFIX = 'datoso_plugin_'
 
 _SEED_STEPS = """\
       - name: datoso doctor
@@ -79,18 +78,10 @@ def render_ci(pkg: Package, template: str | None = None) -> str:
     return text.replace('@PACKAGE@', pkg.name).replace('@SEED_STEPS@', seed_steps)
 
 
-def _resolve(ws: Workspace, name: str) -> str:
-    for candidate in (name, f'{SEED_PREFIX}{name}', f'{PLUGIN_PREFIX}{name}'):
-        if candidate in ws.packages:
-            return candidate
-    msg = f'unknown package: {name}'
-    raise WorkspaceError(msg)
-
-
 def ci_targets(ws: Workspace, *, include_skipped: bool = False, only: Iterable[str] | None = None) -> list[Package]:
     """Return the packages that get the managed workflow, in workspace order (never core)."""
     if only is not None:
-        selected = {_resolve(ws, name) for name in only}
+        selected = {resolve_name(ws, name) for name in only}
         if CORE in selected:
             msg = f'{CORE} keeps its own test workflow and is not a ci target'
             raise WorkspaceError(msg)

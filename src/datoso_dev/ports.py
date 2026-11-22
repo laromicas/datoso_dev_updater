@@ -44,8 +44,11 @@ class GitPort(Protocol):
     def pull_rebase(self, repo: Path) -> None:
         """``git pull --rebase`` on the current branch."""
 
-    def create_branch(self, repo: Path, branch: str) -> None:
-        """Create (or reset) ``branch`` at the current commit and switch to it."""
+    def create_branch(self, repo: Path, branch: str, start: str | None = None) -> None:
+        """Create (or reset) ``branch`` at ``start`` (default: the current commit) and switch to it."""
+
+    def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
+        """Commit subjects in ``since..rev`` (all history of ``rev`` when ``since`` is None), newest first."""
 
     def commit_paths(self, repo: Path, paths: list[str], message: str) -> None:
         """Stage ``paths`` (relative to the repo) and commit them."""
