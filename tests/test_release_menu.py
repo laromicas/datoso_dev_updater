@@ -67,14 +67,23 @@ def test_needs_release_is_prechecked_and_skipped_hidden(ws, states):
         'datoso_plugin_internetarchive': False,
         REDUMP: True,
         'datoso_seed_enhanced': False,
-        'datoso_seed_base': False,
-    }  # mameredump (skip = true) isn't offered
+    }  # mameredump (skip = true) and base (template) aren't offered
+
+
+def test_ready_to_release_is_prechecked_too(ws, states):
+    states['datoso_seed_enhanced'] = replace(
+        states['datoso_seed_enhanced'], last_tag='v1.0.0', last_tag_version=V('1.0.0'), pypi_version=V('1.0.0')
+    )  # version already bumped past the release
+    seen = {}
+    choose(ws, states, [lambda options: seen.update({o.value: o.checked for o in options})])
+    assert seen['datoso_seed_enhanced'] is True
 
 
 def test_include_skipped_offers_them(ws, states):
     seen = []
     choose(ws, states, [lambda options: seen.extend(o.value for o in options)], include_skipped=True)
     assert 'datoso_seed_mameredump' in seen
+    assert 'datoso_seed_base' not in seen  # a template is never offered
 
 
 def test_pick_packages_and_versions(ws, states):

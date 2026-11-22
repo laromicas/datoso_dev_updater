@@ -11,8 +11,10 @@ from dataclasses import dataclass, field
 from packaging.version import Version
 
 from datoso_dev.policy import FloorChange, extras_floor_changes, policy_changes
-from datoso_dev.state import DEFAULT_BRANCH, PackageState
+from datoso_dev.state import DEFAULT_BRANCH, PackageState, released_version
 from datoso_dev.workspace import Workspace, release_steps
+
+__all__ = ['PackagePlan', 'Plan', 'PlanError', 'plan_release', 'released_version']
 
 
 class PlanError(ValueError):
@@ -79,14 +81,6 @@ class Plan:
         return [item for step in self.steps[1:] for item in step]
 
 
-def released_version(state: PackageState) -> Version | None:
-    """Latest release of a package: the newest of its last tag and (for PyPI packages) its PyPI version."""
-    candidates = [state.last_tag_version]
-    if state.package.pypi:
-        candidates.append(state.pypi_version)
-    return max((v for v in candidates if v is not None), default=None)
-
-
 def _repo_blockers(state: PackageState, default_branch: str) -> list[str]:
     if state.error:
         return [state.error]
@@ -120,6 +114,10 @@ def plan_release(
     unknown = sorted(set(selection) - set(ws.packages))
     if unknown:
         msg = f'unknown package(s): {", ".join(unknown)}'
+        raise PlanError(msg)
+    templates = sorted(name for name in selection if not ws.packages[name].release)
+    if templates:
+        msg = f'{", ".join(templates)} is a template (release = false), not released'
         raise PlanError(msg)
 
     released = {name: released_version(state) for name, state in states.items()}

@@ -18,6 +18,7 @@ def write_package(  # noqa: PLR0913
     *,
     skip: bool = False,
     pypi: bool = True,
+    release: bool = True,
     publish_workflow: bool = False,
     dist_name: str | None = None,
     static_version: bool = False,
@@ -43,7 +44,11 @@ def write_package(  # noqa: PLR0913
             lines.append(f'{extra} = [{", ".join(f"{chr(34)}{r}{chr(34)}" for r in reqs)}]')
     if not static_version:
         lines += ['[tool.setuptools.dynamic]', f'version = {{attr = "{name}.__version__"}}']
-    tool = [*(['skip = true'] if skip else []), *([] if pypi else ['pypi = false'])]
+    tool = [
+        *(['skip = true'] if skip else []),
+        *([] if pypi else ['pypi = false']),
+        *([] if release else ['release = false']),
+    ]
     if tool:
         lines += ['[tool.datoso-dev]', *tool]
     if publish_workflow:
@@ -91,7 +96,7 @@ def sample_workspace(tmp_path: Path) -> Path:
     write_package(tmp_path, 'datoso_seed_redump', '1.0.1', ['datoso>=1.1.0'])
     write_package(tmp_path, 'datoso_seed_enhanced', '1.1.0', ['datoso>=1.1.0', 'datoso-plugin-internetarchive>=1.1.1'])
     write_package(tmp_path, 'datoso_seed_mameredump', '1.0.0', ['datoso>=1.1.1'], skip=True)
-    write_package(tmp_path, 'datoso_seed_base', '1.0.0', ['datoso>=1.1.1'], pypi=False)
+    write_package(tmp_path, 'datoso_seed_base', '1.0.0', ['datoso>=1.1.1'], pypi=False, release=False)
     (tmp_path / 'datoso_dev_updater').mkdir()
     (tmp_path / 'datoso_dev_updater' / 'pyproject.toml').write_text('[project]\nname = "datoso-dev"\n')
     write_gitmodules(

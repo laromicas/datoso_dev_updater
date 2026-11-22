@@ -16,6 +16,9 @@ from datoso_dev.sync import Outcome, SyncResult
 
 STATUS_STYLE = {
     Status.NEEDS_RELEASE: 'bold yellow',
+    Status.READY: 'bold cyan',
+    Status.FIRST_RELEASE: 'bold magenta',
+    Status.TEMPLATE: 'dim',
     Status.UP_TO_DATE: 'green',
     Status.SKIPPED: 'dim',
     Status.ERROR: 'bold red',
@@ -53,7 +56,7 @@ def status_table(states: list[PackageState]) -> Table:
         table.add_column(column, no_wrap=column in {'Package', 'Status'})
     for state in states:
         status = state.status
-        unreleased = '' if state.error else (str(state.commits_since_tag) if state.commits_since_tag else EMPTY)
+        unreleased = '' if state.error or status is Status.TEMPLATE else str(state.commits_since_tag or EMPTY)
         issues = state.error or '; '.join(state.issues)
         table.add_row(
             state.package.name,
@@ -71,7 +74,7 @@ def status_table(states: list[PackageState]) -> Table:
 def print_status(console: Console, states: list[PackageState]) -> None:
     """Print the dashboard plus a one-line summary."""
     console.print(status_table(states))
-    pending = [s.package.name for s in states if s.status is Status.NEEDS_RELEASE]
+    pending = [s.package.name for s in states if s.pending]
     errors = [s.package.name for s in states if s.status is Status.ERROR]
     if pending:
         console.print(f'[bold yellow]{len(pending)} package(s) need a release:[/] {", ".join(pending)}')

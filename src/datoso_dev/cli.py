@@ -132,6 +132,7 @@ def _state_json(state: PackageState) -> dict:
         'behind': state.behind,
         'changed_files': list(state.changed_files),
         'skip': state.package.skip,
+        'release': state.package.release,
         'status': str(state.status),
         'issues': state.issues,
         'error': state.error,

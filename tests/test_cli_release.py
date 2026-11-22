@@ -81,6 +81,14 @@ def test_release_blocked_plan_opens_nothing(env):
     assert gh.created == []
 
 
+def test_release_template_is_refused(env):
+    ws, _, gh = env
+    result = invoke(ws, 'release', '--only', 'base', '--bump', 'patch', '--yes')
+    assert result.exit_code == 2
+    assert 'datoso_seed_base is a template' in result.output
+    assert gh.created == []
+
+
 def test_release_unknown_package(env):
     ws, _, _ = env
     result = invoke(ws, 'release', '--only', 'nope', '--bump', 'patch', '--yes')

@@ -7,9 +7,8 @@ from collections.abc import Iterable, Mapping
 from packaging.version import Version
 from rich.console import Console
 
-from datoso_dev.planner import released_version
 from datoso_dev.prompts import Option, Prompter
-from datoso_dev.state import PackageState, Status
+from datoso_dev.state import PackageState, released_version
 from datoso_dev.versioning import Part, bump, bump_choices
 from datoso_dev.workspace import Workspace
 
@@ -25,13 +24,13 @@ def target_version(state: PackageState, part: Part, pre: str | None = None) -> V
 def _options(
     ws: Workspace, states: Mapping[str, PackageState], *, only: set[str] | None, include_skipped: bool
 ) -> list[Option]:
-    candidates = [name for name, pkg in ws.packages.items() if include_skipped or not pkg.skip]
+    candidates = [name for name, pkg in ws.packages.items() if pkg.release and (include_skipped or not pkg.skip)]
     width = max((len(name) for name in candidates), default=0)
     options = []
     for name in candidates:
         state = states[name]
         status = state.status
-        checked = name in only if only is not None else status is Status.NEEDS_RELEASE
+        checked = name in only if only is not None else state.pending
         label = f'{name:<{width}}  {state.package.version!s:<10} {status}'
         options.append(Option(label, name, disabled=state.error, checked=checked and not state.error))
     return options

@@ -42,6 +42,7 @@ class Package:
     requirements: tuple[Requirement, ...] = ()
     skip: bool = False  # excluded from releases entirely
     pypi: bool = True  # False: released on GitHub only, never published to PyPI
+    release: bool = True  # False: a template (datoso_seed_base), never tagged; still CI-managed and floor-checked
     publishes_to_pypi: bool = False  # a GitHub workflow uploads to PyPI on release
     extras: tuple[tuple[str, tuple[Requirement, ...]], ...] = ()  # optional-dependencies, in file order
 
@@ -139,6 +140,7 @@ def load_package(path: Path) -> Package:
         extras=extras,
         skip=bool(settings.get('skip', False)),
         pypi=bool(settings.get('pypi', True)),
+        release=bool(settings.get('release', True)),
         publishes_to_pypi=has_publish_workflow(path),
     )
 

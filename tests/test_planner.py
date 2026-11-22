@@ -158,6 +158,11 @@ def test_unknown_package_is_an_error(ws, states):
         plan_release(ws, states, {'nope': V('1.0.0')})
 
 
+def test_template_is_refused(ws, states):
+    with pytest.raises(PlanError, match='datoso_seed_base is a template'):
+        plan_release(ws, states, {'datoso_seed_base': V('1.0.1')})
+
+
 def test_empty_selection_is_an_error(ws, states):
     with pytest.raises(PlanError, match='nothing'):
         plan_release(ws, states, {})

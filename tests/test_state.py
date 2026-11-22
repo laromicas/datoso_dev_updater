@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -79,12 +80,12 @@ def test_commits_since_tag_means_needs_release(ws):
     assert state.status is Status.NEEDS_RELEASE
 
 
-def test_never_tagged_package_with_commits_needs_release(ws):
+def test_never_tagged_package_is_ready_for_its_first_release(ws):
     git = _git_for(ws, datoso_seed_redump=FakeRepo(tags=[], commits_since={None: 7}))
     state = _state(collect_states(ws, git, _pypi_for(ws, datoso_seed_redump=None)), 'datoso_seed_redump')
     assert state.last_tag is None
     assert state.commits_since_tag == 7
-    assert state.status is Status.NEEDS_RELEASE
+    assert state.status is Status.FIRST_RELEASE
 
 
 def test_skipped_package_is_skipped_and_not_queried_on_pypi(ws):
@@ -104,16 +105,30 @@ def test_skipped_package_is_skipped_and_not_queried_on_pypi(ws):
         (FakeRepo(behind=4, tags=['v1.0.1']), '1.0.1', '4 behind origin'),
         (FakeRepo(ahead=2, tags=['v1.0.1']), '1.0.1', '2 unpushed commit(s)'),
         (FakeRepo(has_upstream=False, tags=['v1.0.1']), '1.0.1', 'no upstream'),
-        (FakeRepo(tags=['v1.0.1']), None, 'not on PyPI'),
+        (FakeRepo(tags=['v1.0.1']), None, 'v1.0.1 tagged but not on PyPI'),
         (FakeRepo(tags=['v1.0.1']), '1.0.0', 'v1.0.1 tagged but PyPI has 1.0.0'),
         (FakeRepo(tags=['v1.0.2']), '1.0.2', 'version 1.0.1 is older than tag v1.0.2'),
-        (FakeRepo(tags=['v1.0.0']), '1.0.0', 'version 1.0.1 bumped but not tagged (last v1.0.0)'),
     ],
 )
 def test_issues(ws, repo, pypi, expected_issue):
     git = _git_for(ws, datoso_seed_redump=repo)
     state = _state(collect_states(ws, git, _pypi_for(ws, datoso_seed_redump=pypi)), 'datoso_seed_redump')
     assert any(expected_issue in issue for issue in state.issues), state.issues
+
+
+@pytest.mark.parametrize(
+    ('repo', 'pypi', 'status'),
+    [
+        (FakeRepo(tags=['v1.0.0'], commits_since={'v1.0.0': 2}), '1.0.0', Status.READY),  # 1.0.1 bumped, untagged
+        (FakeRepo(tags=[], commits_since={None: 5}), None, Status.FIRST_RELEASE),  # never tagged nor on PyPI
+    ],
+)
+def test_bumped_or_first_release_is_a_status_not_an_issue(ws, repo, pypi, status):
+    git = _git_for(ws, datoso_seed_redump=repo)
+    state = _state(collect_states(ws, git, _pypi_for(ws, datoso_seed_redump=pypi)), 'datoso_seed_redump')
+    assert state.status is status
+    assert state.pending
+    assert state.issues == []
 
 
 def test_fetch_only_when_requested(ws):
@@ -158,6 +173,7 @@ def test_needs_release_and_issues_summary(ws):
 
 
 def test_pypi_false_package_is_not_queried_and_not_flagged(ws):
+    ws.packages['datoso_seed_base'] = replace(ws.packages['datoso_seed_base'], release=True)  # GitHub-only seed
     pypi = _pypi_for(ws)
     git = _git_for(ws, datoso_seed_base=FakeRepo(tags=['v1.0.0'], commits_since={'v1.0.0': 3}))
     state = _state(collect_states(ws, git, pypi), 'datoso_seed_base')
@@ -176,3 +192,11 @@ def test_pypi_false_with_publish_workflow_is_flagged(tmp_path: Path):
     git = FakeGit({ws.packages['datoso'].path: FakeRepo(tags=['v1.0.0'])})
     state = collect_states(ws, git, FakePyPI())[0]
     assert any('pypi = false but a workflow publishes to PyPI on release' in i for i in state.issues)
+
+
+def test_template_is_never_released(ws):
+    git = _git_for(ws, datoso_seed_base=FakeRepo(tags=[], commits_since={None: 36}))
+    state = _state(collect_states(ws, git, _pypi_for(ws)), 'datoso_seed_base')
+    assert state.status is Status.TEMPLATE
+    assert not state.pending
+    assert state.issues == []

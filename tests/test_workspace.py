@@ -257,7 +257,9 @@ def test_pypi_flag_defaults_true_and_can_be_disabled(sample_workspace: Path):
     ws = discover(sample_workspace)
     assert ws.packages['datoso_seed_redump'].pypi is True
     assert ws.packages['datoso_seed_base'].pypi is False
-    assert ws.packages['datoso_seed_base'].skip is False  # released on GitHub, just not on PyPI
+    assert ws.packages['datoso_seed_base'].skip is False  # still CI-managed and floor-checked
+    assert ws.packages['datoso_seed_base'].release is False  # template: never released
+    assert ws.packages['datoso_seed_redump'].release is True
 
 
 def test_publish_workflow_detection(tmp_path: Path):
