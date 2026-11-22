@@ -146,20 +146,21 @@ def test_sync_outdated_with_open_pr_updates_branch_only(redump):
 
 
 @pytest.mark.parametrize(
-    ('repo', 'detail'),
+    ('repo', 'detail', 'needs_pull'),
     [
-        (FakeRepo(changed=['x.py']), 'uncommitted'),
-        (FakeRepo(branch='feature', branches={'master', 'feature'}), 'on feature'),
-        (FakeRepo(behind=2), 'behind'),
-        (FakeRepo(ahead=1), 'unpushed'),
-        (FakeRepo(has_upstream=False), 'no upstream'),
+        (FakeRepo(changed=['x.py']), 'uncommitted', False),
+        (FakeRepo(branch='feature', branches={'master', 'feature'}), 'on feature', True),
+        (FakeRepo(behind=2), 'behind', True),
+        (FakeRepo(ahead=1), 'unpushed', False),
+        (FakeRepo(has_upstream=False), 'no upstream', False),
     ],
 )
-def test_sync_skips_unsafe_repos(redump, repo: FakeRepo, detail: str):
+def test_sync_skips_unsafe_repos(redump, repo: FakeRepo, detail: str, needs_pull: bool):  # noqa: FBT001
     git, gh = FakeGit({redump.path: repo}), FakeGh()
     result = ci_sync(redump, git, gh)
     assert result.outcome is CiOutcome.SKIPPED
     assert detail in result.detail
+    assert result.needs_pull is needs_pull
     assert git.commits == []
     assert not (redump.path / WORKFLOW_PATH).exists()
 

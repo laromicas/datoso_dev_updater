@@ -108,8 +108,8 @@ def test_menu_refreshes_after_sync(env):
     ws, git, _, _, _ = env
     redump = ws.packages['datoso_seed_redump']
     run(env, [Action.SYNC, [redump], True, Action.QUIT])
-    # initial check of every target + the sync's own fetch of redump + a full re-check afterwards
-    assert len(git.called('fetch')) == 2 * len(ci_targets(ws)) + 1
+    # initial check + re-check before the selection + the sync's own fetch of redump + re-check afterwards
+    assert len(git.called('fetch')) == 3 * len(ci_targets(ws)) + 1
 
 
 def test_nothing_actionable_skips_checkbox(env):
@@ -158,3 +158,48 @@ def test_menu_error_exit_code(env):
     git.repos[redump.path].fail_on = {'push'}
     code, _ = run(env, [Action.SYNC, [redump], True, Action.QUIT])
     assert code == 1
+
+
+def test_sync_rechecks_before_offering_selection(env):
+    """State can change while the menu is open (PRs merged, repos behind): never offer a stale selection."""
+    ws, git, gh, _, out = env
+
+    def everything_falls_behind(_options):
+        for pkg in ci_targets(ws):
+            git.repos[pkg.path].behind = 1
+        return Action.SYNC
+
+    code, prompter = run(env, [everything_falls_behind, Action.QUIT])
+    assert code == 0
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select']  # no checkbox: straight back to the menu
+    assert 'behind by 1' in out.getvalue()
+    assert 'Nothing to do' in out.getvalue()
+    assert gh.created == []
+
+
+def test_pull_updates_behind_repos_then_rechecks(env):
+    ws, git, _, _, out = env
+    redump = ws.packages['datoso_seed_redump']
+    git.repos[redump.path].behind = 1
+    code, prompter = run(env, [Action.PULL, True, Action.QUIT])
+    assert code == 0
+    assert git.called('pull_rebase') == [redump.path]  # only the repo that was behind
+    assert prompter.asked[1][1] == 'Pull 1 repo(s) that are behind or not on master?'
+    assert len(git.called('fetch')) >= 2 * len(ci_targets(ws))  # status re-checked afterwards
+    assert 'updated' in out.getvalue()
+
+
+def test_pull_with_nothing_behind_goes_back_to_menu(env):
+    _, git, _, _, out = env
+    code, prompter = run(env, [Action.PULL, Action.QUIT])
+    assert code == 0
+    assert git.called('pull_rebase') == []
+    assert [kind for kind, *_ in prompter.asked] == ['select', 'select']
+    assert 'Every repo is up to date' in out.getvalue()
+
+
+def test_pull_declined_does_nothing(env):
+    ws, git, _, _, _ = env
+    git.repos[ws.packages['datoso_seed_redump'].path].behind = 1
+    run(env, [Action.PULL, False, Action.QUIT])
+    assert git.called('pull_rebase') == []

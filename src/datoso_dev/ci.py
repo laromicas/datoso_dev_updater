@@ -62,6 +62,7 @@ class CiResult:
     detail: str = ''
     pr_url: str | None = None
     dry_run: bool = False
+    needs_pull: bool = False  # skipped only because the clean repo is behind or on another branch (`sync` fixes it)
 
 
 def template_text() -> str:
@@ -103,21 +104,21 @@ def ci_status(pkg: Package) -> CiStatus:
     return CiStatus.UP_TO_DATE if workflow.read_text(encoding='utf-8') == render_ci(pkg) else CiStatus.OUTDATED
 
 
-def _unsafe(git: GitPort, repo: Path, default_branch: str) -> str | None:
-    """Why the repo can't be used as a clean base for the CI branch, or ``None``."""
+def _unsafe(git: GitPort, repo: Path, default_branch: str) -> tuple[str, bool] | None:
+    """Why the repo can't be used as a clean base for the CI branch (and whether pulling fixes it), or ``None``."""
     if git.changed_files(repo):
-        return 'uncommitted changes'
+        return 'uncommitted changes', False
     branch = git.current_branch(repo)
     if branch != default_branch:
-        return f'on {branch}, not {default_branch}'
+        return f'on {branch}, not {default_branch}', True
     counts = git.ahead_behind(repo)
     if counts is None:
-        return 'no upstream'
+        return 'no upstream', False
     ahead, behind = counts
     if behind:
-        return f'behind by {behind} (run datoso-dev sync)'
+        return f'behind by {behind} (pull it first)', True
     if ahead:
-        return f'{ahead} unpushed commit(s)'
+        return f'{ahead} unpushed commit(s)', False
     return None
 
 
@@ -133,9 +134,10 @@ def ci_sync(
     repo = pkg.path
     try:
         git.fetch(repo)
-        reason = _unsafe(git, repo, default_branch)
-        if reason:
-            return CiResult(pkg, CiOutcome.SKIPPED, reason, dry_run=dry_run)
+        unsafe = _unsafe(git, repo, default_branch)
+        if unsafe:
+            reason, pullable = unsafe
+            return CiResult(pkg, CiOutcome.SKIPPED, reason, dry_run=dry_run, needs_pull=pullable)
         status = ci_status(pkg)
         if status is CiStatus.UP_TO_DATE:
             return CiResult(pkg, CiOutcome.UP_TO_DATE, dry_run=dry_run)

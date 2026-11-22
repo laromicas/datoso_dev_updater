@@ -34,7 +34,12 @@ PR / up to date / skipped with the reason), then a menu:
   need nothing, or can't be touched safely, are listed but disabled with the reason. You confirm before anything is
   pushed, and the status is re-checked afterwards.
 - **Show workflow diff for a package…**: unified diff between the repo's workflow and the template.
+- **Pull repos that are behind or not on master…**: after you merge PRs on GitHub, your local clones are behind and
+  get skipped. This pulls them (same rules as `datoso-dev sync`: clean repos only) and re-checks.
 - **Refresh status** / **Quit**.
+
+The status is re-checked every time you choose *Open / update PRs…*, so a menu left open while you merge PRs never
+offers a stale selection. When nothing needs a PR, it says so and goes back to the menu.
 
 Doing everything at once is opt-in: `ci sync --all`. Without a terminal (scripts, CI), pass names or `--all`, plus
 `--yes`.
