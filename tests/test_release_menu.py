@@ -126,10 +126,46 @@ def test_keep_is_offered_for_an_already_bumped_version(ws, states):
     assert selection == {REDUMP: V('1.0.1')}
 
 
-@pytest.mark.parametrize('answers', [[None], [[]], [[REDUMP], None]])
+@pytest.mark.parametrize('answers', [[None], [[]], [[REDUMP], None, None]])
 def test_escape_or_empty_selection_cancels(ws, states, answers):
     selection, _ = choose(ws, states, answers)
     assert selection is None
+
+
+def test_escape_on_a_version_goes_back_to_the_previous_question(ws, states):
+    selection, prompter = choose(
+        ws, states, [[REDUMP, 'datoso'], by_label('minor'), None, by_label('patch'), by_label('major')]
+    )
+    assert selection == {REDUMP: V('1.0.2'), 'datoso': V('2.0.0')}
+    messages = [message for _, message, _ in prompter.asked]
+    assert messages == [
+        'Packages to release',
+        'datoso_seed_redump 1.0.1: release as',
+        'datoso 1.1.1: release as',  # Esc here...
+        'datoso_seed_redump 1.0.1: release as',  # ...goes back one question
+        'datoso 1.1.1: release as',
+    ]
+    assert prompter.defaults[2] == V('1.1.0')  # the earlier answer is pre-selected
+
+
+def test_escape_on_the_first_version_goes_back_to_the_packages(ws, states):
+    seen = []
+
+    def repick(options):
+        seen.extend(o.value for o in options if o.checked)
+        return ['datoso']
+
+    selection, _ = choose(ws, states, [[REDUMP], None, repick, by_label('patch')])
+    assert seen == [REDUMP]  # earlier picks still ticked
+    assert selection == {'datoso': V('1.1.2')}
+
+
+def test_previous_answers_resume_at_the_last_question(ws, states):
+    """Coming back from a later screen (Esc on "What should this run do?") reopens the last version question."""
+    selection, prompter = choose(ws, states, [by_label('major')], previous={REDUMP: V('1.0.2'), 'datoso': V('1.1.2')})
+    assert selection == {REDUMP: V('1.0.2'), 'datoso': V('2.0.0')}
+    assert [message for _, message, _ in prompter.asked] == ['datoso 1.1.1: release as']
+    assert prompter.defaults == [V('1.1.2')]
 
 
 def test_package_with_error_is_disabled(ws, states):

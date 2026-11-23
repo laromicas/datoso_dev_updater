@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+from packaging.version import Version
 from rich.console import Console
 
 from datoso_dev import __version__
@@ -20,15 +25,16 @@ from datoso_dev.ci_menu import ci_menu
 from datoso_dev.io.gh import Gh
 from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
+from datoso_dev.pipeline import DONE, Waits, commit_pointers, release_batch, update_core_extras
 from datoso_dev.planner import Plan, PlanError, plan_release, released_version
 from datoso_dev.policy import violations
-from datoso_dev.ports import GhPort, GitPort, PyPIPort
-from datoso_dev.prompts import Prompter, QuestionaryPrompter
+from datoso_dev.ports import GhError, GhPort, GitPort, PyPIPort
+from datoso_dev.prompts import Option, Prompter, QuestionaryPrompter
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
-from datoso_dev.release import Action, Probe, probe_releases, run_releases
+from datoso_dev.release import Action, Probe, ReleaseResult, probe_releases, run_releases
 from datoso_dev.release import Outcome as ReleaseOutcome
 from datoso_dev.release_menu import choose_release, target_version
-from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states
+from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states, latest_release_tag
 from datoso_dev.sync import Outcome, sync_all
 from datoso_dev.ui import (
     ci_status_table,
@@ -65,6 +71,11 @@ def make_pypi() -> PyPIPort:
 def make_gh() -> GhPort:
     """Real GitHub CLI adapter."""
     return Gh()
+
+
+def make_waits() -> Waits:
+    """CI / PyPI timeouts and clock for the full release (tests patch it)."""
+    return Waits()
 
 
 def make_prompter() -> Prompter:
@@ -283,12 +294,15 @@ def release(  # noqa: PLR0913, PLR0917
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the plan and stop.')] = False,
     yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask; requires --only and --bump.')] = False,
     no_wait: Annotated[bool, typer.Option('--no-wait', help='Do not wait for PyPI after publishing.')] = False,
+    merge: Annotated[
+        bool, typer.Option('--merge', help='With --yes: full release (wait for CI, merge, publish, every step).')
+    ] = False,
 ) -> None:
-    """Release packages: pick packages and versions, review the plan, then open PRs or publish releases.
+    """Release packages: pick packages and versions, review the plan, then release them.
 
-    A release takes two runs: the first opens the release PR; merge it; the next run tags the merge commit, publishes
-    the GitHub Release (which uploads to PyPI) and waits for PyPI. Interactive by default. Later steps (packages
-    depending on others in the batch) wait until step 1 is published; run `release` again then.
+    Full release (interactive choice, or --yes --merge): per step, PR → CI → merge → GitHub Release (triggers the PyPI
+    upload) → PyPI listed; then core's extras floors and the workspace pointers. Or stop at the PRs (--yes): you merge
+    on GitHub and run `release` again. Every run resumes from what GitHub and PyPI already show.
     """
     ws = resolve_workspace(workspace)
     try:
@@ -302,69 +316,133 @@ def release(  # noqa: PLR0913, PLR0917
     states = _collect(ws)
     print_status(console, list(states.values()))
     prompter = make_prompter() if interactive else None
+    previous: dict[str, Version] | None = None
+    while True:  # Esc on "What should this run do?" goes back to the versions
+        selection = _select(ws, states, prompter, only_names, bump_part, pre, include_skipped, previous)
+        try:
+            plan = plan_release(ws, states, selection, include_skipped=include_skipped)
+        except PlanError as exc:
+            _fail(str(exc))
+        probes = probe_releases(plan, ws, make_git(), make_gh())
+        console.print(plan_table(plan, probes))
+        if dry_run:
+            raise typer.Exit(0 if plan.ok else 1)
+        if not plan.runnable_now:
+            _fail('nothing can be released now: every step-1 package is blocked.', 1)
+        mode = _choose_mode(probes, prompter, merge=merge)
+        if mode is not None:
+            break
+        previous = selection
+    if mode == FULL:
+        _full_release(plan, probes, ws, states, wait=not no_wait)
+    else:
+        _step_release(plan, probes, ws, states, wait=not no_wait)
+
+
+def _select(  # noqa: PLR0913, PLR0917
+    ws: Workspace,
+    states: dict[str, PackageState],
+    prompter: Prompter | None,
+    only: list[str] | None,
+    part: Part | None,
+    pre: str | None,
+    include_skipped: bool,
+    previous: dict[str, Version] | None,
+) -> dict[str, Version]:
+    """Package → target version, from the wizard (Esc on the packages exits) or from --only/--bump."""
     try:
-        if prompter:
-            selection = choose_release(
-                ws, states, prompter, console, only=only_names, part=bump_part, pre=pre, include_skipped=include_skipped
-            )
-            if selection is None:
-                raise typer.Exit(0)
-        else:
-            selection = {name: target_version(states[name], bump_part, pre) for name in only_names}
-        plan = plan_release(ws, states, selection, include_skipped=include_skipped)
-    except (PlanError, VersionError) as exc:
+        if prompter is None:
+            return {name: target_version(states[name], part, pre) for name in only or []}  # type: ignore[arg-type]
+        selection = choose_release(
+            ws, states, prompter, console, only=only, part=part, pre=pre, include_skipped=include_skipped,
+            previous=previous,
+        )  # fmt: skip
+    except VersionError as exc:
         _fail(str(exc))
-
-    probes = probe_releases(plan, ws, make_git(), make_gh())
-    console.print(plan_table(plan, probes))
-    if dry_run:
-        raise typer.Exit(0 if plan.ok else 1)
-    if not plan.runnable_now:
-        _fail('nothing can be released now: every step-1 package is blocked.', 1)
-    if plan.waiting:
-        names = ', '.join(item.name for item in plan.waiting)
-        console.print(f'[yellow]{names} waits for step 1 to be published; run `release` again then.[/]')
-    _execute_release(plan, probes, ws, states, prompter, wait=not no_wait)
+    if selection is None:
+        raise typer.Exit(0)
+    return selection
 
 
-def _release_question(probes: dict[str, Probe]) -> str | None:
+FULL, STEP = 'full', 'step'
+FULL_LABEL = 'Full release: PR → CI → merge → GitHub Release → PyPI, every step; then core extras floors and pointers'
+
+
+def _step_question(probes: dict[str, Probe]) -> str | None:
     counts = Counter(probe.action for probe in probes.values())
     parts = []
     if counts[Action.OPEN_PR]:
         parts.append(f'open {counts[Action.OPEN_PR]} release PR(s)')
     if counts[Action.PUBLISH]:
         parts.append(f'publish {counts[Action.PUBLISH]} release(s)')
-    question = ' and '.join(parts)
-    return f'{question[0].upper()}{question[1:]}?' if parts else None
+    text = ' and '.join(parts)
+    return f'{text[0].upper()}{text[1:]}' if parts else None
 
 
-def _execute_release(  # noqa: PLR0913
-    plan: Plan,
-    probes: dict[str, Probe],
-    ws: Workspace,
-    states: dict[str, PackageState],
-    prompter: Prompter | None,
-    *,
-    wait: bool,
-) -> None:
-    question = _release_question(probes)
-    if question is None:
-        console.print('[yellow]Nothing to do now: merge the open release PR(s), then run `release` again.[/]')
-        _print_links(probe.pr_url for probe in probes.values())
-        raise typer.Exit(0 if plan.ok else 1)
-    if prompter and not prompter.confirm(question, default=True):
-        raise typer.Exit(0)
+def _choose_mode(probes: dict[str, Probe], prompter: Prompter | None, *, merge: bool) -> str | None:
+    """Full release, or one step that stops at the PRs (interactive: ask; else ``--merge`` decides)."""
+    if prompter is None:
+        return FULL if merge else STEP
+    step = _step_question(probes)
+    options = [
+        Option(FULL_LABEL, FULL),
+        Option(
+            f'{step}, then stop (you merge on GitHub)' if step else 'Stop at the PRs',
+            STEP,
+            disabled=None if step else 'nothing to open or publish: the PRs wait for a merge',
+        ),
+    ]
+    return prompter.select('What should this run do?', options)
 
-    def progress(name: str, message: str) -> None:
-        console.print(f'  {name}: {message}', highlight=False)
 
-    results = run_releases(
-        plan, probes, ws, states, make_git(), make_gh(), make_pypi(), wait=wait, on_progress=progress
-    )
+def _progress(name: str, message: str) -> None:
+    console.print(f'  {name}: {message}', highlight=False)
+
+
+def _print_results(results: list[ReleaseResult]) -> None:
     console.print(release_results_table(results))
     for result in results:
         if result.pr_url:
             console.print(f'{result.name}: {result.pr_url}', soft_wrap=True, highlight=False)
+
+
+def _full_release(
+    plan: Plan, probes: dict[str, Probe], ws: Workspace, states: dict[str, PackageState], *, wait: bool
+) -> None:
+    git, gh, pypi = make_git(), make_gh(), make_pypi()
+    if plan.waiting:
+        names = ', '.join(item.name for item in plan.waiting)
+        console.print(f'[dim]{names}: starts once its dependencies in this batch are on PyPI.[/]')
+    waits = replace(make_waits(), wait_pypi=wait)
+    batch = release_batch(plan, ws, states, git, gh, pypi, probes=probes, waits=waits, on_progress=_progress)
+    results = list(batch.results)
+    extras = update_core_extras(ws, git, batch.published)
+    raised = extras is not None and extras.outcome is ReleaseOutcome.UPDATED
+    pointers = commit_pointers(ws, git, batch.published, extras=raised)
+    results += [step for step in (extras, pointers) if step]
+    _print_results(results)
+    unfinished = [r for r in batch.results if r.outcome not in DONE]
+    if unfinished:
+        console.print('Not finished: fix what the table shows, then run `datoso-dev release` again to continue.')
+    if not plan.ok or unfinished or any(r.outcome is ReleaseOutcome.ERROR for r in results):
+        raise typer.Exit(1)
+    console.print('[green]Released.[/]')
+
+
+def _step_release(
+    plan: Plan, probes: dict[str, Probe], ws: Workspace, states: dict[str, PackageState], *, wait: bool
+) -> None:
+    if _step_question(probes) is None:
+        console.print('[yellow]Nothing to do now: merge the open release PR(s), then run `release` again.[/]')
+        _print_links(probe.pr_url for probe in probes.values())
+        raise typer.Exit(0 if plan.ok else 1)
+    if plan.waiting:
+        names = ', '.join(item.name for item in plan.waiting)
+        console.print(f'[yellow]{names} waits for step 1 to be published; run `release` again then.[/]')
+    results = run_releases(
+        plan, probes, ws, states, make_git(), make_gh(), make_pypi(), wait=wait, on_progress=_progress
+    )
+    _print_results(results)
     outcomes = {result.outcome for result in results}
     if outcomes & {ReleaseOutcome.OPENED, ReleaseOutcome.ALREADY_OPEN}:
         console.print('Merge the PR(s), then run `datoso-dev release` again to tag and publish.')
@@ -378,6 +456,49 @@ def _print_links(urls: Iterable[str | None]) -> None:
     for url in urls:
         if url:
             console.print(url, soft_wrap=True, highlight=False)
+
+
+def run_editor(path: Path) -> None:
+    """Open ``path`` in ``$VISUAL`` / ``$EDITOR`` (default ``vi``) and wait for it to close."""
+    editor = os.environ.get('VISUAL') or os.environ.get('EDITOR') or 'vi'
+    subprocess.run([*shlex.split(editor), str(path)], check=True)  # noqa: S603 - the user's own editor
+
+
+@app.command()
+def notes(
+    package: Annotated[str, typer.Argument(help='Package (short names ok).')],
+    version: Annotated[str | None, typer.Argument(help='Release version (default: the latest tag).')] = None,
+    workspace: WorkspaceOpt = None,
+) -> None:
+    """Edit a GitHub Release's notes in your editor (does not re-trigger the PyPI upload)."""
+    ws = resolve_workspace(workspace)
+    try:
+        pkg = ws.packages[resolve_name(ws, package)]
+    except WorkspaceError as exc:
+        _fail(str(exc))
+    git, gh = make_git(), make_gh()
+    if version:
+        tag = f'v{version.removeprefix("v")}'
+    else:
+        latest = latest_release_tag(git.tags(pkg.path))
+        if latest is None:
+            _fail(f'{pkg.name} has no release tag yet.', 1)
+        tag = latest[0]
+    try:
+        if gh.release_url(pkg.path, tag) is None:
+            _fail(f'{pkg.name}: no GitHub Release {tag}.', 1)
+        body = gh.release_notes(pkg.path, tag).rstrip('\n') + '\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f'{pkg.name}-{tag}.md'
+            path.write_text(body, encoding='utf-8')
+            run_editor(path)
+            if path.read_text(encoding='utf-8') == body:
+                console.print(f'{pkg.name} {tag} notes unchanged.', highlight=False)
+                return
+            gh.release_edit_notes(pkg.path, tag, path)
+    except (GhError, OSError, subprocess.CalledProcessError) as exc:
+        _fail(str(exc), 1)
+    console.print(f'{pkg.name} {tag} notes updated.', highlight=False)
 
 
 @app.command('bump')

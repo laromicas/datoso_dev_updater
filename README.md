@@ -2,8 +2,8 @@
 
 Release and maintenance tool for the [datoso](https://github.com/laromicas/datoso) multi-repo workspace.
 
-> **Status: phases 1–3 of the rewrite.** `status`, `sync`, `ci`, `release` (PR, then tag + GitHub Release + PyPI wait), `bump` and `deps`
-> are available. The legacy scripts (`update_version.py`,
+> **Status: phases 1–4 of the rewrite.** `status`, `sync`, `ci`, `release` (full release: PR → CI → merge → GitHub
+> Release → PyPI, every step, core extras floors, pointers), `notes`, `bump` and `deps` are available. The legacy scripts (`update_version.py`,
 > `make_prs.py`, `make_release.py`, `*.sh`) still exist until the release flow lands. See the design doc in the
 > workspace: `docs/tooling/datoso-dev-design.md`.
 
@@ -58,48 +58,49 @@ import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` direct
 ```bash
 datoso-dev release                                   # interactive wizard
 datoso-dev release --only redump,tdc --bump patch --dry-run   # just the plan
-datoso-dev release --only redump --bump patch --yes  # non-interactive
-datoso-dev release ... --no-wait                     # don't wait for PyPI after publishing
+datoso-dev release --only redump --bump patch --yes --merge   # full release, non-interactive
+datoso-dev release --only redump --bump patch --yes  # stop at the PRs (you merge)
+datoso-dev release ... --no-wait                     # don't wait for PyPI (except for batch dependencies)
+datoso-dev notes redump [1.0.2]                      # edit a GitHub Release's notes in $EDITOR
 datoso-dev bump redump minor [--pre rc]              # version only, working tree, no git
 datoso-dev deps [--fix]                              # floors behind the latest released core / IA plugin
 ```
 
-**A release takes two runs, with your merge in between:**
-
-1. `datoso-dev release` → opens the release PR.
-2. You merge it on GitHub once CI passes.
-3. `datoso-dev release` again (pick the same package; *keep* the version) → tags the PR's merge commit, publishes the
-   GitHub Release with generated notes (which triggers the PyPI upload workflow) and waits until PyPI lists the version.
-4. `datoso-dev sync`, then commit the submodule pointers in the workspace.
-
-Before asking anything, each run checks GitHub for every package: no release PR → *open release PR*; an open one →
-*PR open: merge it first*; a merged one → *tag + publish release*; a GitHub Release for the tag → *already released*.
-The plan table shows that action, and the confirmation names it ("Open 1 release PR(s) and publish 1 release(s)?").
-
 The wizard shows the status table, then asks:
 
 1. **Packages to release**: a checkbox, with packages that need a release pre-ticked (`--only` pre-ticks those
-   instead). Skipped packages are hidden unless `--include-skipped`.
+   instead). Skipped packages and templates are hidden (`--include-skipped` shows skipped ones).
 2. **Version per package**: patch / minor / major, or *keep* when `__version__` is already bumped but unreleased.
-   `--bump` answers this for every package; `--pre a|b|rc` makes pre-releases.
+   Never a version below the current one. `--bump` answers this for every package; `--pre a|b|rc` makes pre-releases.
 3. **The plan**: steps in dependency order, version changes, dependency floors, blockers (dirty, wrong branch,
-   behind, version not newer than the last release, blocked dependency), and core's extras floors for later.
-4. **Confirm** the actions. Opening a PR, for each step-1 package in parallel: branch `release/vX.Y.Z` from
-   `origin/master`, set `__version__`, apply the floors, commit `Release <pkg> vX.Y.Z`, push, open the PR (body: the
-   version change, the floors and the commits since the last tag). Publishing: `gh release create vX.Y.Z --target
-   <merge commit> --generate-notes --notes-start-tag <last tag>` (`--prerelease` for a/b/rc), then poll PyPI for up to
-   10 minutes (skipped for `pypi = false`).
+   behind, version not newer than the last release, blocked dependency), core's extras floors, and for step 1 what
+   GitHub already shows: *open release PR*, *PR open: merge it first*, *tag + publish release*, *already released*.
+4. **What should this run do?**
+   - **Full release** (`--yes --merge`): for each step, in parallel per package: open the PR → wait for CI (up to 30
+     min) → squash-merge it (deleting the branch) and fast-forward local `master` → tag the merge commit and publish
+     the GitHub Release with generated notes (that triggers the PyPI upload) → wait until PyPI lists the version (up
+     to 10 min). A step starts once its dependencies in the batch are on PyPI. Then core's extras floors are raised to
+     the published seeds (direct commit + push to core's `master`, only if core is clean on `master`) and the
+     workspace submodule pointers of the released packages are committed and pushed (`Release: … ; core extras
+     floors`).
+   - **Stop at the PRs** (`--yes`): open the step-1 PRs, and publish the ones already merged. You merge on GitHub and
+     run `release` again.
 
-Esc cancels at any point. Dependency policy: every released package follows the latest core and IA plugin
+Opening a PR: branch `release/vX.Y.Z` from `origin/master`, set `__version__`, apply the floors, commit
+`Release <pkg> vX.Y.Z`, push, open the PR (body: the version change, the floors and the commits since the last tag).
+Publishing: `gh release create vX.Y.Z --target <merge commit> --generate-notes --notes-start-tag <last tag>`
+(`--prerelease` for a/b/rc); the PyPI wait is skipped for `pypi = false`.
+
+Esc goes back one question (keeping your earlier answers selected): from a version to the previous one, from
+the first version to the packages, from *What should this run do?* to the versions; Esc on the packages exits.
+Dependency policy: every released package follows the latest core and IA plugin
 (`datoso>=…` is raised to the new core when core is in the batch, else to the latest released core); floors are never
 lowered; packages outside the batch are untouched.
 
-**One step at a time.** A package that depends on another package in the batch (e.g. a seed when core is released
-too) waits until that release is on PyPI, because its PR CI installs the new floor from PyPI. Release step 1, then run
-`release` again: the rest becomes step 1. Still manual (phase 4): merging, core's extras floors, workspace pointers.
-
-Re-running is always safe: a merged PR is never re-opened, an existing release is never re-created, a pushed release
-branch resumes at "open PR", and failed edits are rolled back so `master` stays clean.
+**When something fails** (CI red, merge refused, PyPI slow), that package stops with the PR left open, its dependents
+in the batch are *not started*, and everything else continues. Fix it and run `release` again with the same packages
+and *keep* versions: every task starts from what GitHub and PyPI show, so it resumes where it stopped. A merged PR is
+never re-opened, an existing release never re-created, and failed edits are rolled back so `master` stays clean.
 
 ## Development
 

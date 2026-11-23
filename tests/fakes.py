@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from datoso_dev.ports import GhError, GitError
+from datoso_dev.ports import Checks, GhError, GitError
 
 
 @dataclass
@@ -122,6 +122,10 @@ class FakeGh:
         self.merged_prs: dict[tuple[Path, str], str] = {}
         self.releases: dict[tuple[Path, str], str] = {}  # (repo, tag) -> release URL
         self.releases_created: list[dict[str, object]] = []
+        self.checks: dict[str, list[tuple[Checks, str]]] = {}  # PR URL -> states returned in turn (last one sticks)
+        self.merged: list[str] = []
+        self.notes: dict[tuple[Path, str], str] = {}
+        self.fail_merge = False
         self.created: list[dict[str, object]] = []
         self.fail = fail
 
@@ -136,6 +140,26 @@ class FakeGh:
         self.created.append({'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url})
         self.open_prs[(repo, head)] = url
         return url
+
+    def pr_checks(self, repo: Path, pr_url: str) -> tuple[Checks, str]:
+        states = self.checks.get(pr_url, [(Checks.PASSED, '')])
+        return states.pop(0) if len(states) > 1 else states[0]
+
+    def pr_merge(self, repo: Path, pr_url: str) -> None:
+        if self.fail_merge:
+            msg = 'gh pr merge failed: base branch policy prohibits the merge'
+            raise GhError(msg)
+        self.merged.append(pr_url)
+        for key, url in list(self.open_prs.items()):
+            if url == pr_url:
+                del self.open_prs[key]
+                self.merged_prs[key] = url
+
+    def release_notes(self, repo: Path, tag: str) -> str:
+        return self.notes.get((repo, tag), '')
+
+    def release_edit_notes(self, repo: Path, tag: str, notes_file: Path) -> None:
+        self.notes[(repo, tag)] = notes_file.read_text(encoding='utf-8')
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         return f'sha-of-{pr_url.rsplit("/", 1)[-1]}'
@@ -174,6 +198,7 @@ class FakePrompter:
     def __init__(self, answers: list[object]) -> None:
         self.answers = list(answers)
         self.asked: list[tuple[str, str, list]] = []  # (kind, message, options)
+        self.defaults: list[object] = []  # default of every select, in order
 
     def _next(self, kind: str, message: str, options: list) -> object:
         self.asked.append((kind, message, options))
@@ -183,7 +208,8 @@ class FakePrompter:
         answer = self.answers.pop(0)
         return answer(options) if callable(answer) else answer
 
-    def select(self, message: str, options):
+    def select(self, message: str, options, *, default=None):
+        self.defaults.append(default)
         return self._next('select', message, list(options))
 
     def checkbox(self, message: str, options):

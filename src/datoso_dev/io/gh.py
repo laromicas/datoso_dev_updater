@@ -6,9 +6,10 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from datoso_dev.ports import GhError
+from datoso_dev.ports import Checks, GhError
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+PENDING_EXIT = 8  # gh pr checks: some checks are still running
 
 
 class Gh:
@@ -48,6 +49,34 @@ class Gh:
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as on the base branch."""
         return self._out(repo, 'pr', 'view', pr_url, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid')
+
+    def pr_checks(self, repo: Path, pr_url: str) -> tuple[Checks, str]:
+        """CI state of a PR (``gh pr checks`` exits 0 pass, 8 pending, 1 failed) and the failing checks."""
+        proc = self._run(repo, 'pr', 'checks', pr_url)
+        if proc.returncode == 0:
+            return Checks.PASSED, ''
+        if proc.returncode == PENDING_EXIT:
+            return Checks.PENDING, ''
+        output = (proc.stderr or '') + (proc.stdout or '')
+        if 'no checks reported' in output:
+            return Checks.NONE, ''
+        failed = [line.split('\t') for line in proc.stdout.splitlines() if '\tfail\t' in line]
+        if failed:
+            return Checks.FAILED, '; '.join(f'{cols[0]}: {cols[3]}' for cols in failed if len(cols) > 3)  # noqa: PLR2004
+        msg = f'gh pr checks in {repo}: {output.strip()}'
+        raise GhError(msg)
+
+    def pr_merge(self, repo: Path, pr_url: str) -> None:
+        """Squash-merge a PR (subject: its title + number) and delete its branch."""
+        self._out(repo, 'pr', 'merge', pr_url, '--squash', '--delete-branch')
+
+    def release_notes(self, repo: Path, tag: str) -> str:
+        """Body of the GitHub Release for ``tag``."""
+        return self._out(repo, 'release', 'view', tag, '--json', 'body', '--jq', '.body')
+
+    def release_edit_notes(self, repo: Path, tag: str, notes_file: Path) -> None:
+        """Replace the body of the GitHub Release for ``tag`` (does not re-trigger the PyPI upload)."""
+        self._out(repo, 'release', 'edit', tag, '--notes-file', str(notes_file))
 
     def release_url(self, repo: Path, tag: str) -> str | None:
         """URL of the GitHub Release for ``tag``, or ``None`` when there is none."""

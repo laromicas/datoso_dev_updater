@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from datoso_dev.io.gh import Gh
-from datoso_dev.ports import GhError
+from datoso_dev.ports import Checks, GhError
 
 
 class Runner:
@@ -89,3 +89,44 @@ def test_release_create_argv(tmp_path: Path):
     ]  # fmt: skip
     Gh(runner=run).release_create(tmp_path, tag='v2.0.0rc1', target='abc', title='v2.0.0rc1', prerelease=True)
     assert run.calls[1][0][-2:] == ['--generate-notes', '--prerelease']
+
+
+CHECKS_OUT = 'GitGuardian Security Checks\tpass\t1s\thttps://x\t\ncheck\tfail\t10s\thttps://github.com/o/r/runs/1\t\n'
+
+
+@pytest.mark.parametrize(
+    ('returncode', 'stdout', 'stderr', 'state'),
+    [
+        (0, 'check\tpass\t10s\thttps://x\t\n', '', Checks.PASSED),
+        (8, 'check\tpending\t0\thttps://x\t\n', '', Checks.PENDING),
+        (1, CHECKS_OUT, '', Checks.FAILED),
+        (1, '', "no checks reported on the 'release/v1.0.2' branch", Checks.NONE),
+    ],
+)
+def test_pr_checks_states(tmp_path: Path, returncode, stdout, stderr, state):
+    run = Runner(stdout=stdout, returncode=returncode, stderr=stderr)
+    result, detail = Gh(runner=run).pr_checks(tmp_path, 'https://github.com/o/r/pull/4')
+    assert result is state
+    assert run.calls[0][0] == ['gh', 'pr', 'checks', 'https://github.com/o/r/pull/4']
+    if state is Checks.FAILED:
+        assert detail == 'check: https://github.com/o/r/runs/1'
+
+
+def test_pr_checks_other_errors_raise(tmp_path: Path):
+    with pytest.raises(GhError, match='HTTP 401'):
+        Gh(runner=Runner(returncode=1, stderr='HTTP 401')).pr_checks(tmp_path, 'u')
+
+
+def test_pr_merge_argv(tmp_path: Path):
+    run = Runner()
+    Gh(runner=run).pr_merge(tmp_path, 'https://github.com/o/r/pull/4')
+    assert run.calls[0][0] == ['gh', 'pr', 'merge', 'https://github.com/o/r/pull/4', '--squash', '--delete-branch']
+
+
+def test_release_notes_and_edit(tmp_path: Path):
+    run = Runner(stdout='## What changed\n* x\n')
+    assert Gh(runner=run).release_notes(tmp_path, 'v1.1.0') == '## What changed\n* x'
+    assert run.calls[0][0] == ['gh', 'release', 'view', 'v1.1.0', '--json', 'body', '--jq', '.body']
+    notes = tmp_path / 'notes.md'
+    Gh(runner=run).release_edit_notes(tmp_path, 'v1.1.0', notes)
+    assert run.calls[1][0] == ['gh', 'release', 'edit', 'v1.1.0', '--notes-file', str(notes)]

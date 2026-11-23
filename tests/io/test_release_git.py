@@ -9,12 +9,13 @@ import pytest
 from packaging.version import Version
 
 from datoso_dev.io.git import Git
+from datoso_dev.pipeline import update_core_extras
 from datoso_dev.planner import PackagePlan
 from datoso_dev.policy import FloorChange
 from datoso_dev.release import Outcome, open_release_pr
 from datoso_dev.state import collect_state
-from datoso_dev.workspace import load_package
-from tests.conftest import write_package
+from datoso_dev.workspace import discover, load_package
+from tests.conftest import write_gitmodules, write_package
 from tests.fakes import FakeGh, FakePyPI
 
 pytestmark = pytest.mark.integration
@@ -82,3 +83,25 @@ def test_resume_after_push_when_pr_creation_failed(seed_repo):
     assert second.outcome is Outcome.OPENED
     assert len(gh.created) == 1
     assert git.changed_files(repo) == []
+
+
+def test_core_extras_commit_lands_on_origin_master(isolated_git, tmp_path: Path):
+    origin = tmp_path / 'core.git'
+    sh(tmp_path, 'init', '-q', '--bare', '-b', 'master', str(origin))
+    ws_root = tmp_path / 'ws'
+    ws_root.mkdir()
+    sh(ws_root, 'clone', '-q', str(origin), 'datoso')
+    core = ws_root / 'datoso'
+    write_package(ws_root, 'datoso', '1.1.1', optional={'redump': ['datoso-seed-redump>=1.0.1']})
+    write_package(ws_root, 'datoso_seed_redump', '1.0.2', ['datoso>=1.1.1'])
+    write_gitmodules(ws_root, ['datoso', 'datoso_seed_redump'])
+    sh(core, 'add', '.')
+    sh(core, 'commit', '-q', '-m', 'initial')
+    sh(core, 'push', '-q', '-u', 'origin', 'master')
+
+    result = update_core_extras(discover(ws_root), Git(), {'datoso_seed_redump': Version('1.0.2')})
+    assert result is not None
+    assert result.outcome is Outcome.UPDATED, result.detail
+    assert sh(core, 'status', '--porcelain') == ''
+    assert sh(origin, 'log', '-1', '--format=%s', 'master') == 'Update extras floors: datoso-seed-redump>=1.0.2'
+    assert '"datoso-seed-redump>=1.0.2"' in sh(origin, 'show', 'master:pyproject.toml')

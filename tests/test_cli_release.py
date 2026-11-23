@@ -9,6 +9,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from datoso_dev import cli
+from datoso_dev.ports import Checks
 from datoso_dev.workspace import discover
 
 from .fakes import FakeGh, FakeGit, FakePrompter, FakePyPI, FakeRepo
@@ -24,7 +25,7 @@ class Env(tuple):  # noqa: SLOT001 - (ws, git, gh), unpackable as before, plus t
 @pytest.fixture
 def env(sample_workspace: Path, monkeypatch: pytest.MonkeyPatch):
     ws = discover(sample_workspace)
-    repos = {path: FakeRepo() for path in ws.submodule_paths}
+    repos = {path: FakeRepo() for path in [ws.root, *ws.submodule_paths]}
     for pkg in ws.packages.values():
         repos[pkg.path] = FakeRepo(tags=[f'v{pkg.version}'], commits_since={f'v{pkg.version}': 0})
     repos[ws.packages[REDUMP].path].commits_since = {'v1.0.1': 2}
@@ -152,13 +153,16 @@ def test_release_unknown_package(env):
 def test_release_wizard_flow(env, monkeypatch: pytest.MonkeyPatch):
     ws, _, gh = env
     patch = lambda options: next(o.value for o in options if o.label.startswith('patch'))  # noqa: E731
-    prompter = FakePrompter([[REDUMP], patch, True])
+    prompter = FakePrompter([[REDUMP], patch, 'step'])
     monkeypatch.setattr(cli, 'is_interactive', lambda: True)
     monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
     result = invoke(ws, 'release')
     assert result.exit_code == 0, result.output
     assert [pr['repo'].name for pr in gh.created] == [REDUMP]
-    assert prompter.asked[-1][1] == 'Open 1 release PR(s)?'
+    kind, message, options = prompter.asked[-1]
+    assert (kind, message) == ('select', 'What should this run do?')
+    assert [o.value for o in options] == ['full', 'step']
+    assert options[1].label == 'Open 1 release PR(s), then stop (you merge on GitHub)'
 
 
 def test_release_wizard_question_names_the_actions(env, monkeypatch: pytest.MonkeyPatch):
@@ -166,20 +170,75 @@ def test_release_wizard_question_names_the_actions(env, monkeypatch: pytest.Monk
     gh.merged_prs[(ws.packages[REDUMP].path, 'release/v1.0.2')] = 'https://github.com/owner/r/pull/4'
     env.pypi.appears_after[(ws.packages[REDUMP].dist_name, '1.0.2')] = 0
     patch = lambda options: next(o.value for o in options if o.label.startswith('patch'))  # noqa: E731
-    prompter = FakePrompter([[REDUMP, 'datoso_seed_enhanced'], patch, patch, True])
+    prompter = FakePrompter([[REDUMP, 'datoso_seed_enhanced'], patch, patch, 'step'])
     monkeypatch.setattr(cli, 'is_interactive', lambda: True)
     monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
     result = invoke(ws, 'release')
     assert result.exit_code == 0, result.output
-    assert prompter.asked[-1][1] == 'Open 1 release PR(s) and publish 1 release(s)?'
+    assert prompter.asked[-1][2][1].label.startswith('Open 1 release PR(s) and publish 1 release(s), then stop')
     assert len(gh.releases_created) == 1
     assert len(gh.created) == 1
+
+
+def test_release_wizard_full_release(env, monkeypatch: pytest.MonkeyPatch):
+    ws, git, gh = env
+    redump = ws.packages[REDUMP]
+    env.pypi.appears_after[(redump.dist_name, '1.0.2')] = 0
+    git.repos[ws.root].changed = [REDUMP, 'datoso']
+    patch = lambda options: next(o.value for o in options if o.label.startswith('patch'))  # noqa: E731
+    prompter = FakePrompter([[REDUMP], patch, 'full'])
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
+    result = invoke(ws, 'release')
+    assert result.exit_code == 0, result.output
+    assert gh.merged == ['https://github.com/owner/datoso_seed_redump/pull/1']
+    assert [r['tag'] for r in gh.releases_created] == ['v1.0.2']
+    assert 'Update extras floors: datoso-seed-redump>=1.0.2' in result.output
+    assert 'Release: datoso_seed_redump 1.0.2; core extras floors' in result.output
+    assert (ws.root, 'master', False) in git.pushes
+
+
+def test_release_yes_merge_is_the_full_release(env):
+    ws, _, gh = env
+    env.pypi.appears_after[(ws.packages[REDUMP].dist_name, '1.0.2')] = 0
+    result = invoke(ws, 'release', '--only', 'redump', '--bump', 'patch', '--yes', '--merge')
+    assert result.exit_code == 0, result.output
+    assert len(gh.merged) == 1
+    assert len(gh.releases_created) == 1
+
+
+def test_release_full_ci_failure_exits_1_and_says_how_to_continue(env):
+    ws, _, gh = env
+    gh.checks['https://github.com/owner/datoso_seed_redump/pull/1'] = [(Checks.FAILED, 'check: https://x')]
+    result = invoke(ws, 'release', '--only', 'redump', '--bump', 'patch', '--yes', '--merge')
+    assert result.exit_code == 1
+    assert 'CI failed' in result.output
+    assert 'run `datoso-dev release` again' in result.output
+    assert gh.releases_created == []
+
+
+def test_release_wizard_escape_on_the_mode_goes_back_to_the_versions(env, monkeypatch: pytest.MonkeyPatch):
+    ws, _, gh = env
+    by = lambda prefix: lambda options: next(o.value for o in options if o.label.startswith(prefix))  # noqa: E731
+    prompter = FakePrompter([[REDUMP], by('patch'), None, by('minor'), 'step'])
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    monkeypatch.setattr(cli, 'make_prompter', lambda: prompter)
+    result = invoke(ws, 'release')
+    assert result.exit_code == 0, result.output
+    assert [m for _, m, _ in prompter.asked] == [
+        'Packages to release',
+        'datoso_seed_redump 1.0.1: release as',
+        'What should this run do?',
+        'datoso_seed_redump 1.0.1: release as',
+        'What should this run do?',
+    ]
+    assert [pr['head'] for pr in gh.created] == ['release/v1.1.0']
 
 
 def test_release_wizard_decline(env, monkeypatch: pytest.MonkeyPatch):
     ws, git, gh = env
     monkeypatch.setattr(cli, 'is_interactive', lambda: True)
-    monkeypatch.setattr(cli, 'make_prompter', lambda: FakePrompter([[REDUMP], lambda o: o[0].value, None]))
+    monkeypatch.setattr(cli, 'make_prompter', lambda: FakePrompter([[REDUMP], lambda o: o[0].value, None, None, None]))
     result = invoke(ws, 'release')
     assert result.exit_code == 0
     assert gh.created == []
@@ -218,3 +277,52 @@ def test_deps_reports_and_fixes(env):
     assert '"datoso>=1.1.1"' in (ws.packages[REDUMP].path / 'pyproject.toml').read_text()
     assert invoke(ws, 'deps').exit_code == 0  # nothing left once the working tree is reloaded
     assert git.commits == []
+
+
+# --------------------------------------------------------------------------- notes
+
+
+def fake_editor(new_text: str | None):
+    """Replace the file's content (None: leave it unchanged) and record what the editor was shown."""
+    seen = []
+
+    def edit(path: Path) -> None:
+        seen.append(path.read_text(encoding='utf-8'))
+        if new_text is not None:
+            path.write_text(new_text, encoding='utf-8')
+
+    return edit, seen
+
+
+def test_notes_edits_the_release_body(env, monkeypatch: pytest.MonkeyPatch):
+    ws, _, gh = env
+    redump = ws.packages[REDUMP]
+    gh.releases[(redump.path, 'v1.0.1')] = 'https://github.com/owner/r/releases/tag/v1.0.1'
+    gh.notes[(redump.path, 'v1.0.1')] = '## What changed\n* Fix fetch'
+    edit, seen = fake_editor('## Highlights\nFaster fetch.\n')
+    monkeypatch.setattr(cli, 'run_editor', edit)
+    result = invoke(ws, 'notes', 'redump')  # defaults to the latest tag
+    assert result.exit_code == 0, result.output
+    assert seen == ['## What changed\n* Fix fetch\n']
+    assert gh.notes[(redump.path, 'v1.0.1')] == '## Highlights\nFaster fetch.\n'
+    assert 'v1.0.1 notes updated' in result.output
+
+
+def test_notes_unchanged_is_not_uploaded(env, monkeypatch: pytest.MonkeyPatch):
+    ws, _, gh = env
+    redump = ws.packages[REDUMP]
+    gh.releases[(redump.path, 'v1.0.0')] = 'u'
+    gh.notes[(redump.path, 'v1.0.0')] = 'old'
+    edit, _ = fake_editor(None)
+    monkeypatch.setattr(cli, 'run_editor', edit)
+    result = invoke(ws, 'notes', 'redump', '1.0.0')
+    assert result.exit_code == 0, result.output
+    assert 'unchanged' in result.output
+    assert gh.notes[(redump.path, 'v1.0.0')] == 'old'
+
+
+def test_notes_without_release(env):
+    ws, _, _ = env
+    result = invoke(ws, 'notes', 'redump', '9.9.9')
+    assert result.exit_code == 1
+    assert 'no GitHub Release v9.9.9' in result.output

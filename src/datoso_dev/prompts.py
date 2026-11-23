@@ -23,8 +23,8 @@ class Option:
 class Prompter(Protocol):
     """What menus may ask the user. Every method returns ``None`` when the user cancels (Esc / Ctrl-C)."""
 
-    def select(self, message: str, options: Sequence[Option]) -> Any | None:  # noqa: ANN401
-        """Pick exactly one option; return its value."""
+    def select(self, message: str, options: Sequence[Option], *, default: Any = None) -> Any | None:  # noqa: ANN401
+        """Pick exactly one option (``default``: the value highlighted first); return its value."""
 
     def checkbox(self, message: str, options: Sequence[Option]) -> list[Any] | None:
         """Pick any number of options; return their values."""
@@ -43,10 +43,12 @@ class QuestionaryPrompter:
         """``app_kwargs`` (e.g. ``input``/``output``) go to the prompt_toolkit application; used by tests."""
         self.app_kwargs = app_kwargs
 
-    def select(self, message: str, options: Sequence[Option]) -> Any | None:  # noqa: ANN401
-        """Pick exactly one option."""
+    def select(self, message: str, options: Sequence[Option], *, default: Any = None) -> Any | None:  # noqa: ANN401
+        """Pick exactly one option, starting on ``default`` when given."""
+        choices = _choices(options)
+        start = next((c for c in choices if c.value == default), None) if default is not None else None
         question = questionary.select(
-            message, choices=_choices(options), instruction=self.SELECT_HINT, **self.app_kwargs
+            message, choices=choices, default=start, instruction=self.SELECT_HINT, **self.app_kwargs
         )
         return _escapable(question).ask()
 

@@ -58,3 +58,8 @@ def test_checkbox_prechecked_options(keys):
     options = [Option('first', 1, checked=True), Option('second', 2)]
     keys.send_text(ENTER)
     assert prompter(keys).checkbox('Pick', options) == [1]
+
+
+def test_select_default_is_highlighted(keys):
+    keys.send_text(ENTER)
+    assert prompter(keys).select('Pick', OPTIONS, default=2) == 2
