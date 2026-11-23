@@ -52,12 +52,15 @@ markers = [
 source = ["datoso_dev"]
 branch = true
 
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
 # Same settings as the workspace root ruff.toml, inlined so CI (standalone repo) uses them too.
 [tool.ruff]
 line-length = 120
 indent-width = 4
 target-version = "py311"
-extend-exclude = ["lib", "make_prs.py", "make_release.py", "update_version.py"]  # legacy, removed in phase 5
 
 [tool.ruff.lint]
 select = ["ALL"]

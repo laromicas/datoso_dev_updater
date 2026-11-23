@@ -2,10 +2,10 @@
 
 Release and maintenance tool for the [datoso](https://github.com/laromicas/datoso) multi-repo workspace.
 
-> **Status: phases 1–4 of the rewrite.** `status`, `sync`, `ci`, `release` (full release: PR → CI → merge → GitHub
-> Release → PyPI, every step, core extras floors, pointers), `notes`, `bump` and `deps` are available. The legacy scripts (`update_version.py`,
-> `make_prs.py`, `make_release.py`, `*.sh`) still exist until the release flow lands. See the design doc in the
-> workspace: `docs/tooling/datoso-dev-design.md`.
+> **Status: rewrite complete (phases 1–5).** `status`, `sync`, `ci`, `release` (full release: PR → CI → merge → GitHub
+> Release → PyPI, every step, core extras floors, pointers), `notes`, `bump` and `deps`. The legacy scripts and
+> `config.ini` are gone: GitHub access goes through the `gh` CLI (`gh auth login`). Design doc in the workspace:
+> `docs/tooling/datoso-dev-design.md`.
 
 ## Install
 
@@ -107,7 +107,7 @@ never re-opened, an existing release never re-created, and failed edits are roll
 ```bash
 cd datoso_dev_updater
 uv venv .venv && uv pip install --python .venv/bin/python -e '.[test]'
-.venv/bin/pytest --cov                 # unit + component + offline integration tests
+.venv/bin/pytest --cov                 # unit + component + offline integration tests; the run fails if coverage drops below 90 %
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 

@@ -28,4 +28,4 @@ jobs:
           ruff check .
           ruff format --check .
       - name: Test
-        run: pytest --cov --cov-report=term-missing --cov-fail-under=90
+        run: pytest --cov  # fail_under in pyproject.toml

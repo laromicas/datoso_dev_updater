@@ -14,7 +14,7 @@ from packaging.version import Version
 from datoso_dev.pipeline import Waits, commit_pointers, release_batch, update_core_extras
 from datoso_dev.planner import plan_release
 from datoso_dev.ports import Checks
-from datoso_dev.release import Outcome, probe_releases
+from datoso_dev.release import Action, Outcome, Probe, probe_releases
 from datoso_dev.state import PackageState
 from datoso_dev.workspace import Workspace, discover
 
@@ -181,6 +181,50 @@ def test_resume_existing_release_only_checks_pypi(env):
     assert batch.published == {REDUMP: V('1.0.2')}
 
 
+def run_with(env: Env, selection, probe: Probe, *, pypi: FakePyPI | None = None):
+    plan = plan_release(env.ws, env.states, selection)
+    probes = dict.fromkeys(selection, probe)
+    return release_batch(plan, env.ws, env.states, env.git, env.gh, pypi or env.pypi, probes=probes, waits=no_wait())
+
+
+def test_probe_error_is_reported(env):
+    batch = run_with(env, {REDUMP: V('1.0.2')}, Probe(Action.ERROR, detail='gh: not logged in'))
+    [result] = batch.results
+    assert (result.outcome, result.detail) == (Outcome.ERROR, 'gh: not logged in')
+
+
+def test_pr_merged_since_the_probe_is_published(env):
+    url = 'https://github.com/owner/datoso_seed_redump/pull/9'
+    env.gh.merged_prs[(env.ws.packages[REDUMP].path, 'release/v1.0.2')] = url
+    batch = run_with(env, {REDUMP: V('1.0.2')}, Probe(Action.OPEN_PR))
+    assert outcomes(batch) == {REDUMP: Outcome.PUBLISHED}
+    assert env.gh.created == []
+    assert [r['target'] for r in env.gh.releases_created] == ['sha-of-9']
+
+
+def test_pr_creation_failure_stops_the_package(env):
+    env.gh.fail = True
+    _, batch = run(env, {REDUMP: V('1.0.2')})
+    assert outcomes(batch) == {REDUMP: Outcome.ERROR}
+    assert env.gh.merged == []
+
+
+def test_released_but_not_on_pypi(env):
+    batch = run_with(env, {REDUMP: V('1.0.2')}, Probe(Action.RELEASED), pypi=FakePyPI())
+    [result] = batch.results
+    assert result.outcome is Outcome.PYPI_PENDING
+    assert 'check the publish workflow' in result.detail
+    assert batch.published == {}
+
+
+def test_blocked_packages_are_not_started(env):
+    env.states[REDUMP] = replace(env.states[REDUMP], branch='wip')
+    plan, batch = run(env, {REDUMP: V('1.0.2')})
+    assert plan.items[0].blockers
+    assert batch.results == []
+    assert env.gh.created == []
+
+
 # --------------------------------------------------------------------------- steps
 
 
@@ -249,6 +293,21 @@ def test_core_extras_skipped_when_core_is_dirty(ws, git):
     assert git.commits == []
 
 
+def test_core_extras_already_raised_on_master(ws, git, monkeypatch):
+    core = ws.packages['datoso'].path / 'pyproject.toml'
+    raised = core.read_text().replace('datoso-seed-redump>=1.0.1', 'datoso-seed-redump>=1.0.2')
+    monkeypatch.setattr(git, 'pull_rebase', lambda _repo: core.write_text(raised))  # someone pushed it meanwhile
+    assert update_core_extras(ws, git, {REDUMP: V('1.0.2')}) is None
+    assert git.commits == []
+
+
+def test_core_extras_push_failure(ws, git):
+    git.repos[ws.packages['datoso'].path].fail_on = {'push'}
+    result = update_core_extras(ws, git, {REDUMP: V('1.0.2')})
+    assert result.outcome is Outcome.ERROR
+    assert 'push failed' in result.detail
+
+
 # --------------------------------------------------------------------------- workspace pointers
 
 
@@ -279,3 +338,10 @@ def test_no_wait_still_waits_for_packages_others_depend_on(env):
     release_batch(plan, env.ws, env.states, env.git, env.gh, env.pypi, probes=probes, waits=waits)
     assert ('datoso', '1.2.0') in env.pypi.polls  # the seed's CI needs it on PyPI
     assert ('datoso-seed-redump', '1.0.2') not in env.pypi.polls  # nothing depends on the seed
+
+
+def test_pointers_push_failure(ws, git):
+    git.repos[ws.root].changed = [REDUMP]
+    git.repos[ws.root].fail_on = {'push'}
+    result = commit_pointers(ws, git, {REDUMP: V('1.0.2')}, extras=False)
+    assert result.outcome is Outcome.ERROR
