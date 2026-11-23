@@ -170,7 +170,7 @@ def plan_table(plan: Plan, probes: Mapping[str, Probe] | None = None) -> Table:
         elif item.name in first:
             status = _action_text(probes[item.name]) if probes and item.name in probes else Text('ready', style='green')
         else:
-            status = Text('waits for step 1 to be published', style='yellow')
+            status = Text('after its dependencies in this batch are on PyPI', style='yellow')
         table.add_row(
             str(item.step),
             item.name,
@@ -184,7 +184,7 @@ def plan_table(plan: Plan, probes: Mapping[str, Probe] | None = None) -> Table:
             'datoso (core extras)',
             EMPTY,
             Text('\n'.join(floor_text(c) for c in plan.extras)),
-            Text('direct commit to core master after the releases (phase 4)', style='dim'),
+            Text('full release: direct commit to core master after the releases', style='dim'),
         )
     return table
 
@@ -196,6 +196,10 @@ RELEASE_STYLE = {
     ReleaseOutcome.PUBLISHED: 'bold green',
     ReleaseOutcome.PYPI_PENDING: 'yellow',
     ReleaseOutcome.ALREADY_RELEASED: 'green',
+    ReleaseOutcome.CHECKS_FAILED: 'bold red',
+    ReleaseOutcome.BLOCKED: 'yellow',
+    ReleaseOutcome.UPDATED: 'green',
+    ReleaseOutcome.SKIPPED: 'yellow',
     ReleaseOutcome.NOTHING_TO_COMMIT: 'yellow',
     ReleaseOutcome.ERROR: 'bold red',
 }

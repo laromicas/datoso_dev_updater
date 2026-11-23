@@ -8,11 +8,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-from datoso_dev.policy import FloorChange, extras_floor_changes, policy_changes
+from datoso_dev.policy import FloorChange, current_floor, extras_floor_changes, policy_changes
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, released_version
-from datoso_dev.workspace import Workspace, release_steps
+from datoso_dev.workspace import CORE, Workspace, release_steps
 
 __all__ = ['PackagePlan', 'Plan', 'PlanError', 'plan_release', 'released_version']
 
@@ -99,6 +100,25 @@ def _repo_blockers(state: PackageState, default_branch: str) -> list[str]:
     return blockers
 
 
+def _unreleased_extras(ws: Workspace, released: Mapping[str, Version | None]) -> list[str]:
+    """Core extras whose floor isn't released yet: publishing core then would ship an uninstallable extra."""
+    index = ws.by_dist_name()
+    problems: dict[str, str] = {}
+    for _extra, reqs in ws.packages[CORE].extras:
+        for req in reqs:
+            dependency = index.get(canonicalize_name(req.name))
+            floor = current_floor(req)
+            if dependency is None or floor is None or dependency in problems:
+                continue
+            latest = released.get(dependency)
+            if latest is None or latest < floor:
+                problems[dependency] = (
+                    f'extra needs {req.name}>={floor}, not released yet (latest {latest or "none"}): '
+                    f'release {dependency} first'
+                )
+    return list(problems.values())
+
+
 def plan_release(
     ws: Workspace,
     states: Mapping[str, PackageState],
@@ -134,6 +154,8 @@ def plan_release(
                 blockers.append('skip = true (use --include-skipped)')
             if released[name] is not None and target <= released[name]:
                 blockers.append(f'{target} is not newer than the released {released[name]}')
+            if name == CORE:
+                blockers += _unreleased_extras(ws, released)
             blockers += [f'depends on {dep}, which is blocked' for dep in sorted(ws.deps_of(name) & blocked)]
             if blockers:
                 blocked.add(name)

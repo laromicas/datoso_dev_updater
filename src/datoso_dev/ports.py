@@ -5,6 +5,7 @@ Real implementations live in ``datoso_dev.io``; tests inject in-memory fakes.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -60,6 +61,15 @@ class GitPort(Protocol):
         """Content of ``path`` at ``ref`` (e.g. ``origin/branch``), or ``None`` if the ref or file doesn't exist."""
 
 
+class Checks(StrEnum):
+    """CI state of a pull request."""
+
+    PASSED = 'passed'
+    FAILED = 'failed'
+    PENDING = 'pending'
+    NONE = 'none'  # no checks reported (yet)
+
+
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""
 
@@ -72,8 +82,20 @@ class GhPort(Protocol):
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as."""
 
+    def pr_checks(self, repo: Path, pr_url: str) -> tuple[Checks, str]:
+        """CI state of a PR, plus the failing checks (``name: link``) when it failed."""
+
+    def pr_merge(self, repo: Path, pr_url: str) -> None:
+        """Squash-merge a PR and delete its branch."""
+
     def release_url(self, repo: Path, tag: str) -> str | None:
         """URL of the GitHub Release for ``tag``, or ``None``."""
+
+    def release_notes(self, repo: Path, tag: str) -> str:
+        """Body of the GitHub Release for ``tag``."""
+
+    def release_edit_notes(self, repo: Path, tag: str, notes_file: Path) -> None:
+        """Replace the body of the GitHub Release for ``tag``."""
 
     def release_create(  # noqa: PLR0913
         self,

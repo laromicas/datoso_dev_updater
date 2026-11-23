@@ -15,11 +15,12 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
 from datoso_dev.planner import PackagePlan, Plan
-from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PyPIPort
+from datoso_dev.ports import Checks, GhError, GhPort, GitError, GitPort, PyPIPort
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.state import DEFAULT_BRANCH, PackageState
 from datoso_dev.workspace import VERSION_LINE, Package, Workspace
@@ -27,6 +28,8 @@ from datoso_dev.workspace import VERSION_LINE, Package, Workspace
 PYPROJECT = 'pyproject.toml'
 PYPI_TIMEOUT = 600.0  # seconds to wait for the publish workflow to upload
 PYPI_INTERVAL = 15.0
+CHECKS_TIMEOUT = 1800.0  # seconds for CI to finish
+CHECKS_GRACE = 120.0  # seconds for the first checks to be reported on a new PR
 
 Progress = Callable[[str], None]
 
@@ -37,10 +40,14 @@ class Outcome(StrEnum):
     OPENED = 'PR opened'
     ALREADY_OPEN = 'PR open'  # merge it, then run `release` again
     MERGED = 'PR merged'  # only the tag + GitHub Release are left
+    CHECKS_FAILED = 'CI failed'  # PR left open
     PUBLISHED = 'released'
     PYPI_PENDING = 'released, PyPI pending'
     ALREADY_RELEASED = 'already released'
     NOTHING_TO_COMMIT = 'nothing to commit'
+    BLOCKED = 'not started'  # a dependency in the batch didn't finish
+    UPDATED = 'updated'  # core extras floors / workspace pointers
+    SKIPPED = 'skipped'
     ERROR = 'error'
 
 
@@ -274,6 +281,71 @@ def publish_release(  # noqa: PLR0913
     minutes = round(timeout / 60)
     detail = f'{item.target} not on PyPI after {minutes} min: check the publish workflow (Actions tab)'
     return ReleaseResult(item.name, Outcome.PYPI_PENDING, detail, url)
+
+
+def wait_for_checks(  # noqa: PLR0913
+    gh: GhPort,
+    repo: Path,
+    pr_url: str,
+    *,
+    timeout: float = CHECKS_TIMEOUT,
+    grace: float = CHECKS_GRACE,
+    interval: float = PYPI_INTERVAL,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[bool, str]:
+    """Poll the PR's CI until it passes (``True``) or fails, reports nothing, or times out (``False``, why)."""
+    start = clock()
+    while True:
+        state, detail = gh.pr_checks(repo, pr_url)
+        elapsed = clock() - start
+        if state is Checks.PASSED:
+            return True, ''
+        if state is Checks.FAILED:
+            return False, detail or 'a check failed'
+        if state is Checks.NONE and elapsed >= grace:
+            return False, f'no CI checks reported after {round(grace)} s'
+        if elapsed >= timeout:
+            return False, f'still running after {round(timeout / 60)} min'
+        sleep(interval)
+
+
+def update_master(git: GitPort, repo: Path, default_branch: str = DEFAULT_BRANCH) -> None:
+    """Fast-forward the local default branch after a merge, when the checkout is clean and on it (best effort)."""
+    try:
+        git.fetch(repo)
+        if git.current_branch(repo) == default_branch and not git.changed_files(repo):
+            git.pull_rebase(repo)
+    except GitError:
+        pass
+
+
+def merge_release_pr(  # noqa: PLR0913
+    item: PackagePlan,
+    pkg: Package,
+    git: GitPort,
+    gh: GhPort,
+    *,
+    pr_url: str,
+    progress: Progress | None = None,
+    default_branch: str = DEFAULT_BRANCH,
+    timeout: float = CHECKS_TIMEOUT,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> ReleaseResult:
+    """Wait for the release PR's CI, squash-merge it and fast-forward the local default branch."""
+    report = progress or (lambda _msg: None)
+    try:
+        report('waiting for CI')
+        passed, why = wait_for_checks(gh, pkg.path, pr_url, timeout=timeout, sleep=sleep, clock=clock)
+        if not passed:
+            return ReleaseResult(item.name, Outcome.CHECKS_FAILED, f'{why}; the PR stays open', pr_url)
+        report('merging')
+        gh.pr_merge(pkg.path, pr_url)
+    except (GhError, OSError) as exc:
+        return ReleaseResult(item.name, Outcome.ERROR, str(exc), pr_url)
+    update_master(git, pkg.path, default_branch)
+    return ReleaseResult(item.name, Outcome.MERGED, 'merged', pr_url)
 
 
 def run_releases(  # noqa: PLR0913, PLR0917

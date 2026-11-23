@@ -13,6 +13,7 @@ from datoso_dev.state import PackageState
 from datoso_dev.workspace import discover
 
 V = Version
+REDUMP = 'datoso_seed_redump'
 PLUGIN = 'datoso_plugin_internetarchive'
 
 
@@ -156,6 +157,15 @@ def test_blocked_dependency_blocks_dependents_transitively(ws, states):
 def test_unknown_package_is_an_error(ws, states):
     with pytest.raises(PlanError, match='nope'):
         plan_release(ws, states, {'nope': V('1.0.0')})
+
+
+def test_core_is_blocked_while_an_extra_points_at_an_unreleased_seed(ws, states):
+    """datoso[redump] needs datoso-seed-redump>=1.0.1; if only 1.0.0 is out, `pip install datoso[redump]` breaks."""
+    states[REDUMP] = replace(states[REDUMP], last_tag='v1.0.0', last_tag_version=V('1.0.0'), pypi_version=V('1.0.0'))
+    plan = plan_release(ws, states, {'datoso': V('1.1.2')})
+    assert plan.item('datoso').blockers == [
+        'extra needs datoso-seed-redump>=1.0.1, not released yet (latest 1.0.0): release datoso_seed_redump first'
+    ]
 
 
 def test_template_is_refused(ws, states):
