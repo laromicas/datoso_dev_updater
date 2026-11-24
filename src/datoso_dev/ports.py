@@ -5,6 +5,7 @@ Real implementations live in ``datoso_dev.io``; tests inject in-memory fakes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -76,6 +77,20 @@ class Checks(StrEnum):
     NONE = 'none'  # no checks reported (yet)
 
 
+@dataclass(frozen=True)
+class PrInfo:
+    """An open pull request, as listed by GitHub."""
+
+    number: int
+    title: str
+    branch: str
+    url: str
+    author: str
+    draft: bool = False
+    mergeable: str = 'UNKNOWN'  # MERGEABLE, CONFLICTING or UNKNOWN
+    checks: Checks = Checks.NONE
+
+
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""
 
@@ -96,6 +111,12 @@ class GhPort(Protocol):
 
     def pr_ready(self, repo: Path, pr_url: str) -> None:
         """Mark a draft PR ready for review."""
+
+    def pr_list(self, repo: Path) -> list[PrInfo]:
+        """Open PRs of the repository."""
+
+    def current_user(self, repo: Path) -> str:
+        """Login of the account ``gh`` is authenticated as."""
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as."""

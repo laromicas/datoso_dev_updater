@@ -152,3 +152,41 @@ def test_pr_body_edit_draft_and_ready(tmp_path: Path):
         ['api', '--method', 'PATCH', 'repos/{owner}/{repo}/pulls/5', '-f', 'body=New'],
         ['pr', 'ready', url],
     ]
+
+
+def test_pr_list_parses_authors_and_checks(tmp_path: Path):
+    import json  # noqa: PLC0415
+
+    listed = [
+        {'number': 3, 'title': 'T', 'headRefName': 'feat/x', 'url': 'u3', 'author': {'login': 'me'}, 'isDraft': False,
+         'mergeable': 'MERGEABLE', 'statusCheckRollup': [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]},
+        {'number': 4, 'title': 'U', 'headRefName': 'b', 'url': 'u4', 'author': None, 'isDraft': True,
+         'mergeable': None, 'statusCheckRollup': None},
+    ]  # fmt: skip
+    run = Runner(stdout=json.dumps(listed))
+    first, second = Gh(runner=run).pr_list(tmp_path)
+    assert (first.number, first.author, first.branch, first.checks) == (3, 'me', 'feat/x', Checks.PASSED)
+    assert (second.author, second.draft, second.mergeable, second.checks) == ('', True, 'UNKNOWN', Checks.NONE)
+    assert run.calls[0][0][1:8] == ['pr', 'list', '--state', 'open', '--limit', '100', '--json']
+
+
+@pytest.mark.parametrize(
+    ('checks', 'state'),
+    [
+        ([], Checks.NONE),
+        ([{'conclusion': 'SUCCESS'}, {'state': 'SUCCESS'}, {'conclusion': 'SKIPPED'}], Checks.PASSED),
+        ([{'conclusion': 'SUCCESS'}, {'status': 'IN_PROGRESS', 'conclusion': ''}], Checks.PENDING),
+        ([{'state': 'PENDING'}, {'conclusion': 'FAILURE'}], Checks.FAILED),
+        ([{'state': 'ERROR'}], Checks.FAILED),
+    ],
+)
+def test_rollup(checks, state):
+    from datoso_dev.io.gh import rollup  # noqa: PLC0415
+
+    assert rollup(checks) == state
+
+
+def test_current_user(tmp_path: Path):
+    run = Runner(stdout='laromicas\n')
+    assert Gh(runner=run).current_user(tmp_path) == 'laromicas'
+    assert run.calls[0][0] == ['gh', 'api', 'user', '--jq', '.login']

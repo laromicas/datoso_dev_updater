@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from datoso_dev.ports import Checks, GhError, GitError
+from datoso_dev.ports import Checks, GhError, GitError, PrInfo
 
 
 @dataclass
@@ -141,6 +141,18 @@ class FakeGh:
         self.edited: list[str] = []
         self.readied: list[str] = []
         self.fail_body = False
+        self.listed: dict[Path, list[PrInfo]] = {}  # repo -> open PRs returned by pr_list
+        self.fail_list: set[Path] = set()
+        self.user = 'me'
+
+    def pr_list(self, repo: Path) -> list[PrInfo]:
+        if repo in self.fail_list:
+            msg = f'gh pr list failed in {repo}'
+            raise GhError(msg)
+        return [pr for pr in self.listed.get(repo, []) if pr.url not in self.merged]
+
+    def current_user(self, repo: Path) -> str:
+        return self.user
 
     def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
         return (self.open_prs if state == 'open' else self.merged_prs).get((repo, head))

@@ -42,6 +42,7 @@ from datoso_dev.pr import (
     suggested_branch,
 )
 from datoso_dev.prompts import Option, Prompter, QuestionaryPrompter
+from datoso_dev.prs import OpenPr, list_open, merge
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.release import Action, Probe, ReleaseResult, probe_releases, run_releases
 from datoso_dev.release import Outcome as ReleaseOutcome
@@ -56,6 +57,7 @@ from datoso_dev.ui import (
     pr_table,
     print_pr_urls,
     print_status,
+    prs_table,
     release_results_table,
     sync_table,
 )
@@ -366,6 +368,92 @@ def pr_command(  # noqa: PLR0913, PLR0917
     for error in link_errors:
         console.print(f'[yellow]Could not link:[/] {error}', highlight=False)
     if errors or any(item.action is PrAction.ERROR for item in results):
+        raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- prs
+
+
+def _repo_paths(ws: Workspace, names: list[str] | None) -> list[Path]:
+    """Every repository of the workspace, or the named ones (short names ok, e.g. ``redump``)."""
+    if not names:
+        return list(ws.submodule_paths)
+    by_name = {path.name: path for path in ws.submodule_paths}
+    paths = []
+    for name in names:
+        match = next((by_name[c] for c in (name, f'datoso_seed_{name}', f'datoso_plugin_{name}') if c in by_name), None)
+        if match is None:
+            _fail(f'unknown repository: {name}')
+        paths.append(match)
+    return paths
+
+
+def _pick_prs(prs: list[OpenPr], *, include_failing: bool, yes: bool) -> list[OpenPr]:
+    """Return the PRs to merge: picked in a checkbox (green ones ticked), or with --yes the green ones."""
+    candidates = [item for item in prs if item.mergeable]
+    if yes:
+        return candidates if include_failing else [item for item in candidates if item.green]
+    if not is_interactive():
+        _fail('not a terminal: pass --yes (and --include-failing to merge PRs with failing CI).')
+    options = [
+        Option(f'{item.repo.name} #{item.pr.number} {item.pr.title} [CI {item.pr.checks}]', item,
+               disabled=item.blocker or None, checked=item.green)
+        for item in prs
+    ]  # fmt: skip
+    return make_prompter().checkbox('Merge which PRs?', options) or []
+
+
+@app.command('prs')
+def prs_command(
+    repos: Annotated[
+        list[str] | None, typer.Argument(help='Only these repositories (short names ok). Default: all.')
+    ] = None,
+    workspace: WorkspaceOpt = None,
+    do_merge: Annotated[bool, typer.Option('--merge', help='Pick PRs to squash-merge (only yours).')] = False,
+    include_failing: Annotated[
+        bool,
+        typer.Option('--include-failing', help='With --merge --yes: also merge PRs with failing CI.'),
+    ] = False,
+    yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask (merges every green PR of yours).')] = False,
+) -> None:
+    """List the open PRs of every repository; with --merge, squash-merge the ones you pick.
+
+    Only PRs opened by the account `gh` is logged in as can be merged (re-checked right before each merge), and not
+    drafts or PRs with conflicts. Merged repos are then switched to master and pulled, ready for `release`.
+    """
+    ws = resolve_workspace(workspace)
+    paths = _repo_paths(ws, repos)
+    gh = make_gh()
+    with console.status('Listing pull requests…', spinner='dots'):
+        try:
+            me = gh.current_user(ws.root)
+        except GhError as exc:
+            _fail(str(exc), 1)
+        prs, errors = list_open(paths, gh, me)
+    for error in errors:
+        console.print(f'[bold red]Could not list:[/] {error}', highlight=False)
+    if not prs:
+        console.print('[green]No open pull requests.[/]')
+        raise typer.Exit(1 if errors else 0)
+    console.print(prs_table(prs, title=f'open pull requests (you: {me})'))
+    if not do_merge:
+        raise typer.Exit(1 if errors else 0)
+    chosen = _pick_prs(prs, include_failing=include_failing, yes=yes)
+    if not chosen:
+        console.print('Nothing to merge.')
+        raise typer.Exit(1 if errors else 0)
+    if not yes:
+        typer.confirm(f'Squash-merge {len(chosen)} PR(s) and delete their branches?', abort=True)
+    with console.status('Merging…', spinner='dots'):
+        results = merge(chosen, gh, me)
+    console.print(prs_table(results, title='merge'))
+    merged = list(dict.fromkeys(item.repo for item in results if item.merged))
+    if merged:
+        with console.status('Switching merged repos to master…', spinner='dots'):
+            synced = sync_all(merged, make_git())
+        console.print(sync_table(synced, dry_run=False))
+        errors += [str(result.path) for result in synced if result.outcome is Outcome.ERROR]
+    if errors or any(item.error or item.blocker for item in results):
         raise typer.Exit(1)
 
 

@@ -11,7 +11,9 @@ from rich.text import Text
 from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.planner import Plan
 from datoso_dev.policy import FloorChange
+from datoso_dev.ports import Checks
 from datoso_dev.pr import PrAction, PrItem
+from datoso_dev.prs import OpenPr
 from datoso_dev.release import Action, Probe, ReleaseResult
 from datoso_dev.release import Outcome as ReleaseOutcome
 from datoso_dev.state import PackageState, Status
@@ -253,5 +255,38 @@ def pr_table(items: list[PrItem], *, title: str) -> Table:
             Text(label, style=PR_STYLE[item.action]),
             item.detail,
             item.pr_url or '',
+        )
+    return table
+
+
+CHECKS_STYLE = {Checks.PASSED: 'green', Checks.FAILED: 'red', Checks.PENDING: 'yellow', Checks.NONE: 'dim'}
+
+
+def prs_label(item: OpenPr) -> Text:
+    """Merge column: merged, the error, why it can't be merged, or 'yes'."""
+    if item.merged:
+        return Text('merged', style='bold green')
+    if item.error:
+        return Text(item.error, style='bold red')
+    if item.blocker:
+        return Text(item.blocker, style='yellow')
+    return Text('yes', style='green')
+
+
+def prs_table(items: list[OpenPr], *, title: str) -> Table:
+    """Open PRs of every repository."""
+    table = Table(title=title, title_justify='left', header_style='bold')
+    for column in ('Repository', 'PR', 'Title', 'Branch', 'Author', 'CI', 'Mergeable'):
+        table.add_column(column, no_wrap=column in {'Repository', 'PR'})
+    for item in items:
+        pr = item.pr
+        table.add_row(
+            item.repo.name,
+            f'#{pr.number}' + (' (draft)' if pr.draft else ''),
+            pr.title,
+            pr.branch,
+            pr.author,
+            Text(str(pr.checks), style=CHECKS_STYLE[pr.checks]),
+            prs_label(item),
         )
     return table
