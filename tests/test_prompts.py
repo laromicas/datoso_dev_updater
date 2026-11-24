@@ -63,3 +63,19 @@ def test_checkbox_prechecked_options(keys):
 def test_select_default_is_highlighted(keys):
     keys.send_text(ENTER)
     assert prompter(keys).select('Pick', OPTIONS, default=2) == 2
+
+
+def test_text_typed_answer(keys):
+    keys.send_text('1.3.0' + ENTER)
+    assert prompter(keys).text('Version') == '1.3.0'
+
+
+def test_text_default_and_validation(keys):
+    keys.send_text(ENTER + '\x7f' * 5 + '1.3.0' + ENTER)  # the default is refused, then replaced
+    answer = prompter(keys).text('Version', default='bad', validate=lambda t: None if t == '1.3.0' else 'nope')
+    assert answer == '1.3.0'
+
+
+def test_escape_cancels_text(keys):
+    keys.send_text('1.3' + ESC)
+    assert prompter(keys).text('Version') is None

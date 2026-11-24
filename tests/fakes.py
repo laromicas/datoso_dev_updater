@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from datoso_dev.ports import Checks, GhError, GitError, PrInfo
+from datoso_dev.ports import Checks, GhError, GitError, PrInfo, WorkflowRun
 
 
 @dataclass
@@ -96,6 +96,10 @@ class FakeGit:
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         return list(self._repo('log_subjects', repo).subjects)
 
+    def rev_parse(self, repo: Path, ref: str) -> str:
+        self._repo('rev_parse', repo)
+        return f'sha-of-{ref}'
+
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         return self._repo('show_file', repo).files.get((ref, path))
 
@@ -144,6 +148,8 @@ class FakeGh:
         self.listed: dict[Path, list[PrInfo]] = {}  # repo -> open PRs returned by pr_list
         self.fail_list: set[Path] = set()
         self.user = 'me'
+        self.runs: dict[tuple[Path, str], WorkflowRun] = {}  # (repo, tag) -> publish run
+        self.fail_runs = False
 
     def pr_list(self, repo: Path) -> list[PrInfo]:
         if repo in self.fail_list:
@@ -153,6 +159,12 @@ class FakeGh:
 
     def current_user(self, repo: Path) -> str:
         return self.user
+
+    def workflow_run(self, repo: Path, workflow: str, ref: str) -> WorkflowRun | None:
+        if self.fail_runs:
+            msg = f'gh run list failed in {repo}'
+            raise GhError(msg)
+        return self.runs.get((repo, ref))
 
     def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
         return (self.open_prs if state == 'open' else self.merged_prs).get((repo, head))
@@ -246,6 +258,7 @@ class FakePrompter:
         self.answers = list(answers)
         self.asked: list[tuple[str, str, list]] = []  # (kind, message, options)
         self.defaults: list[object] = []  # default of every select, in order
+        self.errors: list[str | None] = []  # what validate said about each text answer
 
     def _next(self, kind: str, message: str, options: list) -> object:
         self.asked.append((kind, message, options))
@@ -264,3 +277,10 @@ class FakePrompter:
 
     def confirm(self, message: str, *, default: bool = False):
         return self._next('confirm', message, [])
+
+    def text(self, message: str, *, default: str = '', validate=None):
+        self.defaults.append(default)
+        answer = self._next('text', message, [])
+        if answer is not None and validate is not None:
+            self.errors.append(validate(answer))
+        return answer

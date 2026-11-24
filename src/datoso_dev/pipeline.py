@@ -31,6 +31,7 @@ from datoso_dev.release import (
     merge_release_pr,
     open_release_pr,
     probe_release,
+    publish_from_branch,
     publish_release,
     update_master,
     wait_for_pypi,
@@ -90,6 +91,14 @@ def full_release(  # noqa: PLR0913, PLR0917
             action, pr_url = Action.PUBLISH, opened.pr_url
         elif opened.outcome in {Outcome.OPENED, Outcome.ALREADY_OPEN}:
             action, pr_url = Action.WAIT_MERGE, opened.pr_url
+        elif opened.outcome is Outcome.NOTHING_TO_COMMIT:  # version already on master: tag it, no PR
+            result = publish_from_branch(
+                item, pkg, git, gh, pypi, since=state.last_tag, default_branch=default_branch,
+                wait=waits.wait_pypi, progress=progress, timeout=waits.pypi_timeout, sleep=waits.sleep,
+                clock=waits.clock,
+            )  # fmt: skip
+            update_master(git, pkg.path, default_branch)
+            return result
         else:
             return opened
     if action is Action.WAIT_MERGE:

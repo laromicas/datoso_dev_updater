@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 
 import pytest
 from packaging.version import Version
+from rich.console import Console
 
+from datoso_dev.ports import WorkflowRun
 from datoso_dev.state import PackageState, Status, collect_states, latest_release_tag
+from datoso_dev.ui import status_table
 from datoso_dev.workspace import discover
 
-from .fakes import FakeGit, FakePyPI, FakeRepo
+from .fakes import FakeGh, FakeGit, FakePyPI, FakeRepo
 
 # --------------------------------------------------------------------------- latest_release_tag
 
@@ -200,3 +204,75 @@ def test_template_is_never_released(ws):
     assert state.status is Status.TEMPLATE
     assert not state.pending
     assert state.issues == []
+
+
+# --------------------------------------------------------------------------- tag newer than PyPI
+
+
+class LaggingPyPI(FakePyPI):
+    """The "latest" endpoint is cached (1.0.0), but the exact-version endpoint may already know 1.0.1."""
+
+    def __init__(self, versions, *, exact: bool) -> None:
+        super().__init__(versions)
+        self.exact = exact
+
+    def has_version(self, dist_name, version):
+        self.polls.append((dist_name, version))
+        return self.exact
+
+
+def lagging(ws, *, exact: bool = False, gh=None) -> PackageState:
+    git = _git_for(ws, datoso_seed_redump=FakeRepo(tags=['v1.0.1']))
+    pypi = LaggingPyPI(_pypi_for(ws, datoso_seed_redump='1.0.0').versions, exact=exact)
+    return _state(collect_states(ws, git, pypi, gh=gh or FakeGh()), 'datoso_seed_redump')
+
+
+def test_cached_latest_but_exact_version_is_there(ws):
+    state = lagging(ws, exact=True)
+    assert state.pypi_version == Version('1.0.1')
+    assert state.issues == []
+    assert state.notes == []
+
+
+@pytest.mark.parametrize(
+    ('run', 'note'),
+    [
+        (('in_progress', ''), 'v1.0.1 is being published to PyPI (in progress)'),
+        (('queued', ''), 'v1.0.1 is being published to PyPI (queued)'),
+        (('completed', 'success'), 'v1.0.1 published; PyPI not listing it yet'),
+    ],
+)
+def test_publish_running_or_done_is_a_note_not_an_issue(ws, run, note):
+    gh = FakeGh()
+    gh.runs[(ws.packages['datoso_seed_redump'].path, 'v1.0.1')] = WorkflowRun(*run, url='https://x/runs/1')
+    state = lagging(ws, gh=gh)
+    assert state.issues == []
+    assert state.notes == [note]
+    assert state.status is Status.UP_TO_DATE
+
+
+def test_failed_publish_run_is_an_issue_with_its_link(ws):
+    gh = FakeGh()
+    gh.runs[(ws.packages['datoso_seed_redump'].path, 'v1.0.1')] = WorkflowRun(
+        'completed', 'failure', 'https://x/runs/2'
+    )
+    state = lagging(ws, gh=gh)
+    assert state.issues == ['v1.0.1 publish workflow failure: https://x/runs/2']
+    assert state.notes == []
+
+
+def test_no_run_or_gh_failure_keeps_the_old_warning(ws):
+    failing = FakeGh()
+    failing.fail_runs = True
+    for state in (lagging(ws), lagging(ws, gh=failing)):
+        assert state.issues == ['v1.0.1 tagged but PyPI has 1.0.0 (publish failed?)']
+
+
+def test_notes_are_shown_dimmed_after_the_issues(ws):
+
+    state = replace(
+        lagging(ws, exact=True), issues=['1 behind origin'], notes=['v1.0.1 published; PyPI not listing it yet']
+    )
+    out = StringIO()
+    Console(file=out, width=300).print(status_table([state]))
+    assert '1 behind origin; v1.0.1 published; PyPI not listing it yet' in out.getvalue()

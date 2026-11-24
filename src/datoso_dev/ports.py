@@ -64,6 +64,9 @@ class GitPort(Protocol):
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         """Push ``branch`` to ``origin`` and set its upstream."""
 
+    def rev_parse(self, repo: Path, ref: str) -> str:
+        """Commit SHA of ``ref`` (e.g. ``origin/master``)."""
+
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         """Content of ``path`` at ``ref`` (e.g. ``origin/branch``), or ``None`` if the ref or file doesn't exist."""
 
@@ -91,6 +94,15 @@ class PrInfo:
     checks: Checks = Checks.NONE
 
 
+@dataclass(frozen=True)
+class WorkflowRun:
+    """A GitHub Actions run: ``status`` (queued, in_progress, completed…) and, once completed, ``conclusion``."""
+
+    status: str
+    conclusion: str = ''
+    url: str = ''
+
+
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""
 
@@ -114,6 +126,9 @@ class GhPort(Protocol):
 
     def pr_list(self, repo: Path) -> list[PrInfo]:
         """Open PRs of the repository."""
+
+    def workflow_run(self, repo: Path, workflow: str, ref: str) -> WorkflowRun | None:
+        """Latest run of ``workflow`` (file name) for ``ref`` (e.g. a release tag), or ``None``."""
 
     def current_user(self, repo: Path) -> str:
         """Login of the account ``gh`` is authenticated as."""

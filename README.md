@@ -17,7 +17,8 @@ uv tool install -e ./datoso_dev_updater      # from the workspace root; puts `da
 
 ```bash
 datoso-dev status              # dashboard: version, last tag, PyPI, unreleased commits, branch, issues
-datoso-dev status --offline    # no git fetch, no PyPI queries
+                               # (a tag ahead of PyPI checks its publish run: running/done is a note, failed an issue)
+datoso-dev status --offline    # no git fetch, no PyPI / GitHub queries
 datoso-dev status --json       # machine-readable
 datoso-dev sync --dry-run      # fetch all repos and show what would change
 datoso-dev sync                # switch clean repos to master and pull --rebase (dirty repos are skipped)
@@ -109,8 +110,9 @@ The wizard shows the status table, then asks:
 
 1. **Packages to release**: a checkbox, with packages that need a release pre-ticked (`--only` pre-ticks those
    instead). Skipped packages and templates are hidden (`--include-skipped` shows skipped ones).
-2. **Version per package**: patch / minor / major, or *keep* when `__version__` is already bumped but unreleased.
-   Never a version below the current one. `--bump` answers this for every package; `--pre a|b|rc` makes pre-releases.
+2. **Version per package**: patch / minor / major, *keep* when `__version__` is already bumped but unreleased, or
+   *custom…* to type one (e.g. `1.3.0` to align a seed with core; Esc or an invalid answer goes back to the choices).
+   Never a version below the current one, and always newer than the last release. `--bump` answers this for every package; `--pre a|b|rc` makes pre-releases.
 3. **The plan**: steps in dependency order, version changes, dependency floors, blockers (dirty, wrong branch,
    behind, version not newer than the last release, blocked dependency), core's extras floors, and for step 1 what
    GitHub already shows: *open release PR*, *PR open: merge it first*, *tag + publish release*, *already released*.

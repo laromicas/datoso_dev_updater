@@ -71,7 +71,9 @@ def status_table(states: list[PackageState]) -> Table:
     for state in states:
         status = state.status
         unreleased = '' if state.error or status is Status.TEMPLATE else str(state.commits_since_tag or EMPTY)
-        issues = state.error or '; '.join(state.issues)
+        issues = Text(state.error or '; '.join(state.issues), style='red' if state.error else 'yellow')
+        if state.notes and not state.error:
+            issues.append(('; ' if state.issues else '') + '; '.join(state.notes), style='dim')
         table.add_row(
             state.package.name,
             str(state.package.version),
@@ -80,7 +82,7 @@ def status_table(states: list[PackageState]) -> Table:
             unreleased,
             _dash(state.branch),
             Text(str(status), style=STATUS_STYLE[status]),
-            Text(issues, style='red' if state.error else 'yellow'),
+            issues,
         )
     return table
 

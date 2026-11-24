@@ -9,8 +9,22 @@ from rich.console import Console
 
 from datoso_dev.prompts import Option, Prompter
 from datoso_dev.state import PackageState, released_version
-from datoso_dev.versioning import Part, bump, bump_choices
+from datoso_dev.versioning import Part, bump, bump_choices, check_custom
 from datoso_dev.workspace import Workspace
+
+CUSTOM = 'custom'
+
+
+def custom_version(prompter: Prompter, name: str, state: PackageState, suggested: Version | None) -> Version | None:
+    """Ask for a version typed by hand (``None``: back to the choices)."""
+    current, released = state.package.version, released_version(state)
+    answer = prompter.text(
+        f'{name}: version to release', default=str(suggested or ''),
+        validate=lambda text: check_custom(text, current, released),
+    )  # fmt: skip
+    if answer is None or check_custom(answer, current, released):
+        return None
+    return Version(answer.strip())
 
 
 def target_version(state: PackageState, part: Part, pre: str | None = None) -> Version:
@@ -75,13 +89,20 @@ def choose_release(  # noqa: PLR0913
             name = names[position - 1]
             state = states[name]
             choices = bump_choices(state.package.version, released=released_version(state), pre=pre)
+            offered = [Option(c.label, c.version) for c in choices]
+            earlier = versions.get(name)
+            custom = earlier is not None and all(c.version != earlier for c in choices)
             version = prompter.select(
                 f'{name} {state.package.version}: release as',
-                [Option(c.label, c.version) for c in choices],
-                default=versions.get(name),
+                [*offered, Option(f'custom ({earlier})' if custom else 'custom…', CUSTOM)],
+                default=CUSTOM if custom else earlier,
             )
             if version is None:
                 position -= 1
                 continue
+            if version == CUSTOM:
+                version = custom_version(prompter, name, state, earlier)
+                if version is None:
+                    continue  # back to this package's choices
             versions[name] = version
             position += 1

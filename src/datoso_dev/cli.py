@@ -163,6 +163,7 @@ def _state_json(state: PackageState) -> dict:
         'release': state.package.release,
         'status': str(state.status),
         'issues': state.issues,
+        'notes': state.notes,
         'error': state.error,
     }
 
@@ -177,7 +178,10 @@ def status(
     """Show every package: version, last tag, PyPI, unreleased commits, branch and issues."""
     ws = resolve_workspace(workspace)
     with console.status('Collecting repository state…', spinner='dots') if not as_json else nullcontext():
-        states = collect_states(ws, make_git(), make_pypi(), fetch=fetch and not offline, query_pypi=not offline)
+        states = collect_states(
+            ws, make_git(), make_pypi(), fetch=fetch and not offline, query_pypi=not offline,
+            gh=None if offline else make_gh(),
+        )  # fmt: skip
     if as_json:
         print(json.dumps([_state_json(s) for s in states], indent=2))
     else:
@@ -467,7 +471,9 @@ def _fail(message: str, code: int = 2) -> NoReturn:
 
 def _collect(ws: Workspace, *, offline: bool = False) -> dict[str, PackageState]:
     with console.status('Collecting repository state…', spinner='dots'):
-        states = collect_states(ws, make_git(), make_pypi(), fetch=not offline, query_pypi=not offline)
+        states = collect_states(
+            ws, make_git(), make_pypi(), fetch=not offline, query_pypi=not offline, gh=None if offline else make_gh()
+        )
     return {state.package.name: state for state in states}
 
 

@@ -204,3 +204,10 @@ def test_move_master_commits_to_a_branch(remote_pair):
     sh(work, 'switch', '-q', 'master')
     sh(work, 'branch', '-q', '-D', 'feat/x')
     assert git.branch_exists(work, 'feat/x')  # still on origin
+
+
+def test_rev_parse(remote_pair):
+    _, work, _ = remote_pair
+    assert Git().rev_parse(work, 'origin/master') == sh(work, 'rev-parse', 'origin/master')
+    with pytest.raises(GitError):
+        Git().rev_parse(work, 'origin/nope')

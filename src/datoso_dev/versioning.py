@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 PRE_LABELS = ('a', 'b', 'rc')
 
@@ -99,3 +99,16 @@ def bump_choices(current: Version, *, released: Version | None, pre: str | None 
         if version >= current and all(choice.version != version for choice in choices):  # never a downgrade
             choices.append(Choice(part, version))
     return choices
+
+
+def check_custom(text: str, current: Version, released: Version | None) -> str | None:
+    """Why ``text`` can't be a release version (``None`` when it can): valid, above the release, not a downgrade."""
+    try:
+        version = Version(text.strip())
+    except InvalidVersion:
+        return f'{text.strip() or "(empty)"} is not a valid version'
+    if released is not None and version <= released:
+        return f'must be newer than the last release {released}'
+    if version < current:
+        return f'must not be lower than __version__ {current}'
+    return None

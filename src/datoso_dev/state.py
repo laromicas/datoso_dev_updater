@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from packaging.version import InvalidVersion, Version
 
-from datoso_dev.ports import GitError, GitPort, PyPIPort
+from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PyPIPort
 from datoso_dev.workspace import Package, Workspace
 
 DEFAULT_BRANCH = 'master'
@@ -42,7 +42,9 @@ class PackageState:
     pypi_version: Version | None = None
     pypi_error: str | None = None
     error: str | None = None
+    publish_failure: str | None = None  # the release's publish workflow failed (set by explain_pypi_lag)
     issues: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # informative only, e.g. a release still being published
 
     @property
     def status(self) -> Status:
@@ -123,13 +125,50 @@ def _pypi_issues(state: PackageState) -> list[str]:
         return [f'PyPI unavailable: {state.pypi_error}']
     if state.pypi_version is None:
         return [f'{state.last_tag} tagged but not on PyPI'] if state.last_tag else []  # else: first release
-    if state.last_tag_version and state.pypi_version < state.last_tag_version:
+    if state.publish_failure:
+        return [state.publish_failure]
+    if state.last_tag_version and state.pypi_version < state.last_tag_version and not state.notes:
         return [f'{state.last_tag} tagged but PyPI has {state.pypi_version} (publish failed?)']
     return []
 
 
-def collect_state(
-    package: Package, git: GitPort, pypi: PyPIPort, *, fetch: bool = False, query_pypi: bool = True
+PUBLISH_WORKFLOW = 'python-publish.yml'
+RUNNING = {'queued', 'in_progress', 'waiting', 'pending', 'requested'}
+
+
+def explain_pypi_lag(state: PackageState, pypi: PyPIPort, gh: GhPort | None) -> PackageState:
+    """Explain a tag newer than PyPI: re-ask PyPI for that version, then check the publish run."""
+    tag, version = state.last_tag, state.last_tag_version
+    if not tag or version is None or state.pypi_version is None or state.pypi_version >= version:
+        return state
+    try:
+        if pypi.has_version(state.package.dist_name, str(version)):  # the "latest" endpoint is cached
+            return replace(state, pypi_version=version)
+    except (OSError, ValueError):
+        pass
+    run = None
+    if gh is not None:
+        try:
+            run = gh.workflow_run(state.package.path, PUBLISH_WORKFLOW, tag)
+        except GhError:
+            run = None
+    if run is None:
+        return state
+    if run.status in RUNNING:
+        return replace(state, notes=[f'{tag} is being published to PyPI ({run.status.replace("_", " ")})'])
+    if run.conclusion == 'success':
+        return replace(state, notes=[f'{tag} published; PyPI not listing it yet'])
+    return replace(state, publish_failure=f'{tag} publish workflow {run.conclusion or run.status}: {run.url}')
+
+
+def collect_state(  # noqa: PLR0913
+    package: Package,
+    git: GitPort,
+    pypi: PyPIPort,
+    *,
+    fetch: bool = False,
+    query_pypi: bool = True,
+    gh: GhPort | None = None,
 ) -> PackageState:
     """Collect the state of one package. Git failures are captured in ``error``, never raised."""
     repo = package.path
@@ -165,6 +204,8 @@ def collect_state(
         pypi_version=pypi_version,
         pypi_error=pypi_error,
     )
+    if query_pypi and _published(package):
+        state = explain_pypi_lag(state, pypi, gh)
     state.issues.extend(assess(state, query_pypi=query_pypi))
     return state
 
@@ -176,9 +217,14 @@ def collect_states(  # noqa: PLR0913
     *,
     fetch: bool = False,
     query_pypi: bool = True,
+    gh: GhPort | None = None,
     workers: int = 8,
 ) -> list[PackageState]:
     """Collect states for all packages in parallel, preserving workspace order."""
     packages = list(workspace.packages.values())
+
+    def one(pkg: Package) -> PackageState:
+        return collect_state(pkg, git, pypi, fetch=fetch, query_pypi=query_pypi, gh=gh)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(lambda pkg: collect_state(pkg, git, pypi, fetch=fetch, query_pypi=query_pypi), packages))
+        return list(pool.map(one, packages))
