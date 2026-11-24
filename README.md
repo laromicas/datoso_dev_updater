@@ -32,7 +32,7 @@ datoso-dev pr                  # push them and open or update one linked PR per 
 datoso-dev pr redump --title 'Fix X' --body 'Why' --yes   # no editor, no question
 datoso-dev prs                 # every open PR of every repo: author, CI, mergeable
 datoso-dev prs --merge         # pick PRs to squash-merge (only yours), then switch those repos to master
-datoso-dev pointers            # commit + push the workspace's moved submodule pointers (asks once; --dry-run, --yes)
+datoso-dev pointers            # update + push the recorded submodule pointers (never adds new ones; --dry-run, --yes)
 ```
 
 `datoso-dev ci` is **interactive by default**. It checks every repo, shows a status table (will open PR / will update
@@ -98,7 +98,10 @@ Without a terminal pass `--yes`: it merges every green PR of yours, plus the one
 
 `release` commits the pointers of what it releases. For the rest (a merged PR of a skipped package, this tool itself),
 `datoso-dev pointers` lists every submodule whose checked-out commit differs from the one `datoso_dev` records: from /
-to commit, how many commits and the newest. It records only pointers whose repo is **clean, on `master` and pushed**
+to commit, how many commits and the newest. It **only updates pointers the workspace already records**; it never adds
+anything: a submodule that isn't recorded yet (new in `.gitmodules`) is listed as blocked, and untracked files are
+ignored, so adding those stays a manual `git submodule add` / `git add`. It updates only pointers whose repo is
+**clean, on `master` and pushed**
 (otherwise the row says why), so the workspace never points at local-only or unmerged work. It commits just those
 submodule paths (untracked files and other changes in `datoso_dev` are left alone) with a message like
 `Pointers: a, b` plus each repo's newest commit subjects, and pushes. The workspace itself must be on `master` and not

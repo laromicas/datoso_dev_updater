@@ -474,10 +474,11 @@ def pointers_command(
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the moved pointers and stop.')] = False,
     yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
 ) -> None:
-    """Commit and push the workspace's moved submodule pointers.
+    """Update the workspace's recorded submodule pointers to their repos' current commit, then push.
 
-    Only pointers whose repo is clean, on master and pushed are recorded, so the workspace never points at local-only
-    or unmerged commits. Nothing else is committed (untracked files and other changes are left alone).
+    Only pointers whose repo is clean, on master and pushed are updated, so the workspace never points at local-only
+    or unmerged commits. It never adds anything: a submodule not recorded yet, untracked files and other changes are
+    left alone (add those by hand).
     """
     ws = resolve_workspace(workspace)
     git = make_git()

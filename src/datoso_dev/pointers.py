@@ -1,4 +1,7 @@
-"""`datoso-dev pointers`: commit and push the moved submodule pointers that are safe to record."""
+"""`datoso-dev pointers`: update the submodule pointers the workspace records, when they are safe to record.
+
+It never adds anything: a submodule the workspace doesn't record yet, or any untracked file, is added by hand.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from datoso_dev.state import DEFAULT_BRANCH
 from datoso_dev.workspace import Workspace
 
 MAX_SUBJECTS = 3
+NOT_RECORDED = 'not recorded in the workspace yet: add it yourself (git submodule add / git add)'
 
 
 @dataclass(frozen=True)
@@ -56,7 +60,11 @@ def plan_pointers(ws: Workspace, git: GitPort, *, default_branch: str = DEFAULT_
         if rel not in changed:
             continue
         try:
-            old, new = git.committed_pointer(ws.root, rel), git.rev_parse(repo, 'HEAD')
+            old = git.committed_pointer(ws.root, rel)
+            if old is None:  # only update recorded pointers: a new submodule is added by hand
+                pointers.append(Pointer(repo, blocker=NOT_RECORDED))
+                continue
+            new = git.rev_parse(repo, 'HEAD')
             if old == new:
                 pointers.append(Pointer(repo, old, new, blocker='uncommitted changes (commit them in the repo first)'))
                 continue
@@ -95,8 +103,8 @@ def workspace_blocker(ws: Workspace, git: GitPort, *, default_branch: str = DEFA
 
 
 def commit_pointers(ws: Workspace, git: GitPort, pointers: Iterable[Pointer], *, branch: str = DEFAULT_BRANCH) -> str:
-    """Commit only these submodule paths (nothing else that is staged or untracked) and push; return the message."""
-    pointers = [pointer for pointer in pointers if not pointer.blocker]
+    """Commit only these already-recorded submodule paths (never a new one) and push; return the message."""
+    pointers = [pointer for pointer in pointers if not pointer.blocker and pointer.old]
     message = commit_message(pointers)
     git.commit_paths(ws.root, [str(pointer.path.relative_to(ws.root)) for pointer in pointers], message)
     git.push(ws.root, branch)

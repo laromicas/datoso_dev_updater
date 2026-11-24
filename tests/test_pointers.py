@@ -162,3 +162,31 @@ def test_git_failures(ws, use, failing):
     assert result.exit_code == 1
     assert f'{failing} failed' in result.output
     assert git.pushes == []
+
+
+def test_a_submodule_not_recorded_yet_is_never_added(ws, use):
+    """Listed in .gitmodules and checked out, but the workspace has no gitlink for it: adding it is up to you."""
+    root = FakeRepo(changed=[REDUMP, TDC], pointers={TDC: 'old'})  # redump is new: no recorded commit
+    git = use(make_git(ws, root, **{REDUMP: moved(), TDC: moved()}))
+    plan = {pointer.name: pointer for pointer in plan_pointers(ws, git)}
+    assert plan[REDUMP].blocker.startswith('not recorded in the workspace yet')
+    result = invoke(ws, '--yes')
+    [(_, paths, _)] = git.commits
+    assert paths == [TDC]
+    assert result.exit_code == 1  # redump is still left to add by hand
+
+
+def test_commit_never_records_an_unrecorded_pointer(ws):
+    from datoso_dev.pointers import commit_pointers  # noqa: PLC0415
+
+    git = make_git(ws)
+    message = commit_pointers(ws, git, [Pointer(ws.root / TDC, 'old', 'new'), Pointer(ws.root / REDUMP, None, 'new')])
+    assert git.commits == [(ws.root, [TDC], message)]
+
+
+def test_untracked_files_in_the_workspace_are_ignored(ws, use):
+    git = use(make_git(ws, FakeRepo(changed=['AGENTS.md', 'retool/x.csv', 'new_seed/README.md'])))
+    result = invoke(ws, '--yes')
+    assert result.exit_code == 0
+    assert 'Every submodule pointer is committed' in result.output
+    assert git.commits == []
