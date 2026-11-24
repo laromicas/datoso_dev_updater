@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import questionary
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent, merge_key_bindings
+
+Validator = Callable[[str], str | None]
 
 
 @dataclass(frozen=True)
@@ -32,11 +34,15 @@ class Prompter(Protocol):
     def confirm(self, message: str, *, default: bool = False) -> bool | None:
         """Yes/no question."""
 
+    def text(self, message: str, *, default: str = '', validate: Validator | None = None) -> str | None:
+        """Free text; ``validate`` returns an error message (or ``None`` when the answer is fine)."""
+
 
 class QuestionaryPrompter:
     """Terminal prompts: arrows to move, space to toggle, ``a`` all, ``i`` invert, Esc (or Ctrl-C) to go back."""
 
     SELECT_HINT = '(arrows: move, enter: choose, esc: back)'
+    TEXT_HINT = '(enter: accept, esc: back)'
     CHECKBOX_HINT = '(space: toggle, a: all, i: invert, enter: done, esc: back)'
 
     def __init__(self, **app_kwargs: Any) -> None:  # noqa: ANN401
@@ -62,6 +68,14 @@ class QuestionaryPrompter:
     def confirm(self, message: str, *, default: bool = False) -> bool | None:
         """Yes/no question."""
         return _escapable(questionary.confirm(message, default=default, **self.app_kwargs)).ask()
+
+    def text(self, message: str, *, default: str = '', validate: Validator | None = None) -> str | None:
+        """Free text, re-asked until ``validate`` accepts it."""
+        check = (lambda answer: validate(answer) or True) if validate else None
+        question = questionary.text(
+            message, default=default, validate=check, instruction=self.TEXT_HINT, **self.app_kwargs
+        )
+        return _escapable(question).ask()
 
 
 def _escapable(question: questionary.Question) -> questionary.Question:

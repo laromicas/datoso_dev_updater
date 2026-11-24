@@ -250,6 +250,7 @@ class FakePrompter:
         self.answers = list(answers)
         self.asked: list[tuple[str, str, list]] = []  # (kind, message, options)
         self.defaults: list[object] = []  # default of every select, in order
+        self.errors: list[str | None] = []  # what validate said about each text answer
 
     def _next(self, kind: str, message: str, options: list) -> object:
         self.asked.append((kind, message, options))
@@ -268,3 +269,10 @@ class FakePrompter:
 
     def confirm(self, message: str, *, default: bool = False):
         return self._next('confirm', message, [])
+
+    def text(self, message: str, *, default: str = '', validate=None):
+        self.defaults.append(default)
+        answer = self._next('text', message, [])
+        if answer is not None and validate is not None:
+            self.errors.append(validate(answer))
+        return answer

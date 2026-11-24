@@ -173,3 +173,53 @@ def test_package_with_error_is_disabled(ws, states):
     seen = {}
     choose(ws, states, [lambda options: seen.update({o.value: o.disabled for o in options})])
     assert seen[REDUMP] == 'git failed'
+
+
+# --------------------------------------------------------------------------- custom version
+
+
+def test_custom_version_typed_by_hand(ws, states):
+    selection, prompter = choose(ws, states, [[REDUMP], by_label('custom'), '1.3.0'])
+    assert selection == {REDUMP: V('1.3.0')}
+    assert prompter.asked[-1][:2] == ('text', 'datoso_seed_redump: version to release')
+    assert prompter.errors == [None]
+
+
+@pytest.mark.parametrize(
+    ('typed', 'error'),
+    [
+        ('banana', 'banana is not a valid version'),
+        ('', '(empty) is not a valid version'),
+        ('1.0.1', 'must be newer than the last release 1.0.1'),
+        ('0.9', 'must be newer than the last release 1.0.1'),
+    ],
+)
+def test_invalid_custom_version_goes_back_to_the_choices(ws, states, typed, error):
+    selection, prompter = choose(ws, states, [[REDUMP], by_label('custom'), typed, by_label('patch')])
+    assert selection == {REDUMP: V('1.0.2')}
+    assert prompter.errors == [error]
+
+
+def test_escape_on_custom_goes_back_to_the_choices(ws, states):
+    selection, _ = choose(ws, states, [[REDUMP], by_label('custom'), None, by_label('minor')])
+    assert selection == {REDUMP: V('1.1.0')}
+
+
+def test_custom_version_is_not_lower_than_the_bumped_one(ws, states):
+    from datoso_dev.versioning import check_custom  # noqa: PLC0415
+
+    assert check_custom('1.2.0', V('1.3.0'), V('1.1.0')) == 'must not be lower than __version__ 1.3.0'
+    assert check_custom(' 1.3.0rc1 ', V('1.3.0rc1'), None) is None
+
+
+def test_previous_custom_answer_is_shown_and_offered(ws, states):
+    seen = {}
+
+    def pick_custom(options):
+        seen['labels'] = [o.label for o in options]
+        return 'custom'
+
+    selection, prompter = choose(ws, states, [pick_custom, '1.4.0'], previous={REDUMP: V('1.3.0')})
+    assert 'custom (1.3.0)' in seen['labels']
+    assert prompter.defaults == ['custom', '1.3.0']  # select highlights it, the text starts from it
+    assert selection == {REDUMP: V('1.4.0')}
