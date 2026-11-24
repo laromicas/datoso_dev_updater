@@ -113,6 +113,12 @@ class Git:
         """Push ``branch`` to ``origin`` and set its upstream."""
         self._run(repo, 'push', '--quiet', *(['--force'] if force else []), '--set-upstream', 'origin', branch)
 
+    def committed_pointer(self, repo: Path, path: str) -> str | None:
+        """Commit ``HEAD`` records for the submodule at ``path``: ``git ls-tree`` shows it as a ``commit`` entry."""
+        out = self._out(repo, 'ls-tree', 'HEAD', '--', path)
+        parts = out.split()
+        return parts[2] if len(parts) >= 3 and parts[1] == 'commit' else None  # noqa: PLR2004
+
     def rev_parse(self, repo: Path, ref: str) -> str:
         """Commit SHA of ``ref``."""
         return self._out(repo, 'rev-parse', '--verify', f'{ref}^{{commit}}')

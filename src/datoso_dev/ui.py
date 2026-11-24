@@ -10,6 +10,7 @@ from rich.text import Text
 
 from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.planner import Plan
+from datoso_dev.pointers import Pointer
 from datoso_dev.policy import FloorChange
 from datoso_dev.ports import Checks
 from datoso_dev.pr import PrAction, PrItem
@@ -290,5 +291,22 @@ def prs_table(items: list[OpenPr], *, title: str) -> Table:
             pr.author,
             Text(str(pr.checks), style=CHECKS_STYLE[pr.checks]),
             prs_label(item),
+        )
+    return table
+
+
+def pointers_table(pointers: list[Pointer], *, title: str) -> Table:
+    """Table of moved submodule pointers: from/to commit, what they add, whether they can be committed."""
+    table = Table(title=title, title_justify='left', header_style='bold')
+    for column in ('Repository', 'From', 'To', 'Commits', 'Newest', 'Commit?'):
+        table.add_column(column, no_wrap=column in {'Repository', 'From', 'To'})
+    for pointer in pointers:
+        table.add_row(
+            pointer.name,
+            (pointer.old or EMPTY)[:7],
+            (pointer.new or EMPTY)[:7],
+            str(len(pointer.commits)) if pointer.commits else '',
+            pointer.commits[0] if pointer.commits else '',
+            Text(pointer.blocker, style='yellow') if pointer.blocker else Text('yes', style='green'),
         )
     return table

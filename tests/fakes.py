@@ -21,6 +21,8 @@ class FakeRepo:
     fail_on: set[str] = field(default_factory=set)  # method names that raise GitError
     files: dict[tuple[str, str], str] = field(default_factory=dict)  # (ref, path) -> content
     subjects: list[str] = field(default_factory=list)  # commit subjects returned by log_subjects
+    head: str = ''  # what rev_parse('HEAD') returns (default: sha-of-HEAD)
+    pointers: dict[str, str] = field(default_factory=dict)  # submodule path -> commit recorded in HEAD
 
 
 class FakeGit:
@@ -97,8 +99,11 @@ class FakeGit:
         return list(self._repo('log_subjects', repo).subjects)
 
     def rev_parse(self, repo: Path, ref: str) -> str:
-        self._repo('rev_parse', repo)
-        return f'sha-of-{ref}'
+        state = self._repo('rev_parse', repo)
+        return state.head if ref == 'HEAD' and state.head else f'sha-of-{ref}'
+
+    def committed_pointer(self, repo: Path, path: str) -> str | None:
+        return self._repo('committed_pointer', repo).pointers.get(path)
 
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         return self._repo('show_file', repo).files.get((ref, path))

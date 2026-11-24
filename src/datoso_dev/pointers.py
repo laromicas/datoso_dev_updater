@@ -1,0 +1,103 @@
+"""`datoso-dev pointers`: commit and push the moved submodule pointers that are safe to record."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+from datoso_dev.ports import GitError, GitPort
+from datoso_dev.state import DEFAULT_BRANCH
+from datoso_dev.workspace import Workspace
+
+MAX_SUBJECTS = 3
+
+
+@dataclass(frozen=True)
+class Pointer:
+    """A submodule whose checked-out commit differs from the one the workspace records."""
+
+    path: Path
+    old: str | None = None
+    new: str | None = None
+    commits: tuple[str, ...] = ()  # subjects old..new, newest first
+    blocker: str = ''
+
+    @property
+    def name(self) -> str:
+        """Directory name of the submodule."""
+        return self.path.name
+
+
+def _blocker(git: GitPort, repo: Path, default_branch: str) -> str:
+    """Why the submodule's commit shouldn't be recorded yet (empty when it can)."""
+    if git.changed_files(repo):
+        return 'uncommitted changes (commit them in the repo first)'
+    branch = git.current_branch(repo)
+    if branch != default_branch:
+        return f'on {branch}, not {default_branch} (merge it first)'
+    counts = git.ahead_behind(repo)
+    if counts is None:
+        return 'no upstream'
+    ahead, behind = counts
+    if ahead:
+        return f'{ahead} unpushed commit(s)'
+    if behind:
+        return f'behind origin by {behind} (pull first)'
+    return ''
+
+
+def plan_pointers(ws: Workspace, git: GitPort, *, default_branch: str = DEFAULT_BRANCH) -> list[Pointer]:
+    """Every moved pointer of the workspace, with what it adds and whether it can be committed."""
+    changed = set(git.changed_files(ws.root))
+    pointers = []
+    for repo in ws.submodule_paths:
+        rel = str(repo.relative_to(ws.root))
+        if rel not in changed:
+            continue
+        try:
+            old, new = git.committed_pointer(ws.root, rel), git.rev_parse(repo, 'HEAD')
+            if old == new:
+                pointers.append(Pointer(repo, old, new, blocker='uncommitted changes (commit them in the repo first)'))
+                continue
+            try:
+                commits = tuple(git.log_subjects(repo, old, 'HEAD'))
+            except GitError:
+                commits = ()  # the old commit is gone (rewritten history): still recordable
+            pointers.append(Pointer(repo, old, new, commits, _blocker(git, repo, default_branch)))
+        except GitError as exc:
+            pointers.append(Pointer(repo, blocker=str(exc)))
+    return pointers
+
+
+def commit_message(pointers: Iterable[Pointer]) -> str:
+    """``Pointers: a, b`` plus one line per repo with its newest commit subjects."""
+    pointers = list(pointers)
+    lines = [f'Pointers: {", ".join(pointer.name for pointer in pointers)}', '']
+    for pointer in pointers:
+        shown = '; '.join(pointer.commits[:MAX_SUBJECTS])
+        more = f' (+{len(pointer.commits) - MAX_SUBJECTS} more)' if len(pointer.commits) > MAX_SUBJECTS else ''
+        lines.append(f'- {pointer.name}: {shown or "moved"}{more}')
+    return '\n'.join(lines)
+
+
+def workspace_blocker(ws: Workspace, git: GitPort, *, default_branch: str = DEFAULT_BRANCH) -> str:
+    """Why the workspace repo itself can't take the commit (empty when it can)."""
+    branch = git.current_branch(ws.root)
+    if branch != default_branch:
+        return f'the workspace is on {branch}, not {default_branch}'
+    counts = git.ahead_behind(ws.root)
+    if counts is None:
+        return 'the workspace has no upstream'
+    if counts[1]:
+        return f'the workspace is behind origin by {counts[1]} (pull it first)'
+    return ''
+
+
+def commit_pointers(ws: Workspace, git: GitPort, pointers: Iterable[Pointer], *, branch: str = DEFAULT_BRANCH) -> str:
+    """Commit only these submodule paths (nothing else that is staged or untracked) and push; return the message."""
+    pointers = [pointer for pointer in pointers if not pointer.blocker]
+    message = commit_message(pointers)
+    git.commit_paths(ws.root, [str(pointer.path.relative_to(ws.root)) for pointer in pointers], message)
+    git.push(ws.root, branch)
+    return message

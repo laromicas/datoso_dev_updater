@@ -211,3 +211,14 @@ def test_rev_parse(remote_pair):
     assert Git().rev_parse(work, 'origin/master') == sh(work, 'rev-parse', 'origin/master')
     with pytest.raises(GitError):
         Git().rev_parse(work, 'origin/nope')
+
+
+def test_committed_pointer_reads_the_recorded_submodule_commit(remote_pair):
+    _, work, _ = remote_pair
+    sha = sh(work, 'rev-parse', 'HEAD')
+    sh(work, 'update-index', '--add', '--cacheinfo', f'160000,{sha},sub')  # a gitlink, as `git submodule add` makes
+    sh(work, 'commit', '-q', '-m', 'add sub')
+    git = Git()
+    assert git.committed_pointer(work, 'sub') == sha
+    assert git.committed_pointer(work, 'README.md') is None  # a blob, not a submodule
+    assert git.committed_pointer(work, 'missing') is None
