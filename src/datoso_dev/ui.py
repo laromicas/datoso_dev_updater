@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -12,7 +13,7 @@ from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.planner import Plan
 from datoso_dev.pointers import Pointer
 from datoso_dev.policy import FloorChange
-from datoso_dev.ports import Checks
+from datoso_dev.ports import Checks, PrInfo
 from datoso_dev.pr import PrAction, PrItem
 from datoso_dev.prs import OpenPr
 from datoso_dev.release import Action, Probe, ReleaseResult
@@ -308,5 +309,17 @@ def pointers_table(pointers: list[Pointer], *, title: str) -> Table:
             str(len(pointer.commits)) if pointer.commits else '',
             pointer.commits[0] if pointer.commits else '',
             Text(pointer.blocker, style='yellow') if pointer.blocker else Text('yes', style='green'),
+        )
+    return table
+
+
+def open_pr_branches_table(open_prs: Mapping[Path, PrInfo]) -> Table:
+    """Repos checked out on a branch with an open PR of yours."""
+    table = Table(title='on a branch with your open PR', title_justify='left', header_style='bold')
+    for column in ('Repository', 'Branch', 'PR', 'Title', 'CI'):
+        table.add_column(column, no_wrap=column in {'Repository', 'PR'})
+    for repo, pr in open_prs.items():
+        table.add_row(
+            repo.name, pr.branch, f'#{pr.number}', pr.title, Text(str(pr.checks), style=CHECKS_STYLE[pr.checks])
         )
     return table

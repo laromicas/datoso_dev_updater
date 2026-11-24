@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from datoso_dev.ports import Checks, GhError, GhPort, PrInfo
+from datoso_dev.ports import Checks, GhError, GhPort, GitError, GitPort, PrInfo
+from datoso_dev.state import DEFAULT_BRANCH
 
 
 @dataclass(frozen=True)
@@ -71,3 +72,21 @@ def merge(prs: Iterable[OpenPr], gh: GhPort, me: str) -> list[OpenPr]:
         except GhError as exc:
             results.append(replace(item, error=str(exc)))
     return results
+
+
+def branch_prs(  # noqa: PLR0913
+    paths: Iterable[Path], git: GitPort, gh: GhPort, me: str, *, default_branch: str = DEFAULT_BRANCH, workers: int = 8
+) -> dict[Path, PrInfo]:
+    """Repos checked out on a branch with an open PR of yours (only yours), mapped to that PR."""
+
+    def one(repo: Path) -> tuple[Path, PrInfo | None]:
+        try:
+            branch = git.current_branch(repo)
+            if branch in {default_branch, 'HEAD'}:
+                return repo, None
+            return repo, next((pr for pr in gh.pr_list(repo) if pr.branch == branch and pr.author == me), None)
+        except (GitError, GhError):
+            return repo, None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return {repo: pr for repo, pr in pool.map(one, paths) if pr is not None}
