@@ -345,3 +345,48 @@ def test_pointers_push_failure(ws, git):
     git.repos[ws.root].fail_on = {'push'}
     result = commit_pointers(ws, git, {REDUMP: V('1.0.2')}, extras=False)
     assert result.outcome is Outcome.ERROR
+
+
+# --------------------------------------------------------------------------- version already on master (keep)
+
+
+@pytest.fixture
+def kept(env):
+    """redump's 1.0.1 is already on master (released 1.0.0) and its floors follow core: no release PR is needed."""
+    env.states[REDUMP] = replace(
+        env.states[REDUMP], last_tag='v1.0.0', last_tag_version=V('1.0.0'), pypi_version=V('1.0.0')
+    )
+    env.states['datoso'] = replace(
+        env.states['datoso'], last_tag='v1.1.0', last_tag_version=V('1.1.0'), pypi_version=V('1.1.0')
+    )
+    return env
+
+
+def test_version_already_on_master_is_tagged_and_published(kept):
+    _, batch = run(kept, {REDUMP: V('1.0.1')})
+    assert outcomes(batch) == {REDUMP: Outcome.PUBLISHED}
+    assert kept.gh.created == []  # no release PR
+    assert [(r['tag'], r['target'], r['notes_start_tag']) for r in kept.gh.releases_created] == [
+        ('v1.0.1', 'sha-of-origin/master', 'v1.0.0'),
+    ]  # fmt: skip
+    assert ('datoso-seed-redump', '1.0.1') in kept.pypi.polls
+    assert batch.published == {REDUMP: V('1.0.1')}
+
+
+def test_version_already_on_master_rev_parse_failure(kept):
+    kept.git.repos[kept.ws.packages[REDUMP].path].fail_on = {'rev_parse'}
+    _, batch = run(kept, {REDUMP: V('1.0.1')})
+    [result] = batch.results
+    assert result.outcome is Outcome.ERROR
+    assert 'rev_parse failed' in result.detail
+    assert kept.gh.releases_created == []
+
+
+def test_step_mode_publishes_a_version_already_on_master(kept):
+    from datoso_dev.release import run_releases  # noqa: PLC0415
+
+    plan = plan_release(kept.ws, kept.states, {REDUMP: V('1.0.1')})
+    probes = probe_releases(plan, kept.ws, kept.git, kept.gh)
+    [result] = run_releases(plan, probes, kept.ws, kept.states, kept.git, kept.gh, kept.pypi)
+    assert result.outcome is Outcome.PUBLISHED
+    assert kept.gh.releases_created[0]['target'] == 'sha-of-origin/master'

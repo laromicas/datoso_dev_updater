@@ -96,6 +96,10 @@ class FakeGit:
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         return list(self._repo('log_subjects', repo).subjects)
 
+    def rev_parse(self, repo: Path, ref: str) -> str:
+        self._repo('rev_parse', repo)
+        return f'sha-of-{ref}'
+
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         return self._repo('show_file', repo).files.get((ref, path))
 

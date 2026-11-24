@@ -64,6 +64,9 @@ class GitPort(Protocol):
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         """Push ``branch`` to ``origin`` and set its upstream."""
 
+    def rev_parse(self, repo: Path, ref: str) -> str:
+        """Commit SHA of ``ref`` (e.g. ``origin/master``)."""
+
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         """Content of ``path`` at ``ref`` (e.g. ``origin/branch``), or ``None`` if the ref or file doesn't exist."""
 

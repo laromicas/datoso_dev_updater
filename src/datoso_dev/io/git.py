@@ -113,6 +113,10 @@ class Git:
         """Push ``branch`` to ``origin`` and set its upstream."""
         self._run(repo, 'push', '--quiet', *(['--force'] if force else []), '--set-upstream', 'origin', branch)
 
+    def rev_parse(self, repo: Path, ref: str) -> str:
+        """Commit SHA of ``ref``."""
+        return self._out(repo, 'rev-parse', '--verify', f'{ref}^{{commit}}')
+
     def show_file(self, repo: Path, ref: str, path: str) -> str | None:
         """Content of ``path`` at ``ref``, or ``None`` if the ref or file doesn't exist."""
         proc = self._run(repo, 'show', f'{ref}:{path}', check=False)

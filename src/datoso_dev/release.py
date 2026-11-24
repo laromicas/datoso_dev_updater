@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
@@ -156,9 +157,7 @@ def open_release_pr(  # noqa: PLR0913
         subjects = git.log_subjects(repo, since, f'origin/{default_branch}')
         remote = git.show_file(repo, f'origin/{item.branch}', _version_file(pkg))
         if _version_in(remote, pkg) != item.target and not _commit_bump(item, pkg, git, default_branch, report):
-            return ReleaseResult(
-                item.name, Outcome.NOTHING_TO_COMMIT, f'{item.target} is already on {default_branch}; tag it'
-            )
+            return ReleaseResult(item.name, Outcome.NOTHING_TO_COMMIT, f'{item.target} is already on {default_branch}')
         report('opening PR')
         url = gh.pr_create(repo, base=default_branch, head=item.branch, title=item.title, body=pr_body(item, subjects))
     except (GitError, GhError, OSError) as exc:
@@ -249,17 +248,18 @@ def publish_release(  # noqa: PLR0913
     *,
     pr_url: str,
     since: str | None,
+    target: str | None = None,
     wait: bool = True,
     progress: Progress | None = None,
     timeout: float = PYPI_TIMEOUT,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> ReleaseResult:
-    """Tag the merge commit of the release PR, publish its GitHub Release and (PyPI packages) wait for the upload."""
+    """Tag the release PR's merge commit (or ``target``), publish its GitHub Release and wait for PyPI."""
     report = progress or (lambda _msg: None)
     repo = pkg.path
     try:
-        target = gh.pr_merge_commit(repo, pr_url)
+        target = target or gh.pr_merge_commit(repo, pr_url)
         report(f'publishing GitHub Release {item.tag}')
         url = gh.release_create(
             repo,
@@ -281,6 +281,25 @@ def publish_release(  # noqa: PLR0913
     minutes = round(timeout / 60)
     detail = f'{item.target} not on PyPI after {minutes} min: check the publish workflow (Actions tab)'
     return ReleaseResult(item.name, Outcome.PYPI_PENDING, detail, url)
+
+
+def publish_from_branch(  # noqa: PLR0913
+    item: PackagePlan,
+    pkg: Package,
+    git: GitPort,
+    gh: GhPort,
+    pypi: PyPIPort,
+    *,
+    since: str | None,
+    default_branch: str = DEFAULT_BRANCH,
+    **publish: Any,  # noqa: ANN401
+) -> ReleaseResult:
+    """Publish when the version is already on the default branch (no release PR needed): tag its current commit."""
+    try:
+        target = git.rev_parse(pkg.path, f'origin/{default_branch}')
+    except GitError as exc:
+        return ReleaseResult(item.name, Outcome.ERROR, str(exc))
+    return publish_release(item, pkg, gh, pypi, pr_url='', since=since, target=target, **publish)
 
 
 def wait_for_checks(  # noqa: PLR0913
@@ -370,6 +389,9 @@ def run_releases(  # noqa: PLR0913, PLR0917
         progress = lambda msg: notify(item.name, msg)  # noqa: E731
         if probe.action is Action.OPEN_PR:
             result = open_release_pr(item, pkg, git, gh, since=since, default_branch=default_branch, progress=progress)
+            if result.outcome is Outcome.NOTHING_TO_COMMIT:
+                result = publish_from_branch(item, pkg, git, gh, pypi, since=since, wait=wait, progress=progress,
+                                             default_branch=default_branch)  # fmt: skip
         elif probe.action is Action.PUBLISH:
             result = publish_release(
                 item, pkg, gh, pypi, pr_url=probe.pr_url or '', since=since, wait=wait, progress=progress
