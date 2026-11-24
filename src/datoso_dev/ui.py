@@ -248,7 +248,7 @@ def pr_table(items: list[PrItem], *, title: str) -> Table:
         label = _pr_done.get(item.action, str(item.action)) if item.done else str(item.action)
         table.add_row(
             item.package.name,
-            item.branch,
+            f'master → {item.branch or "?"}' if item.from_base else item.branch,
             str(len(item.commits)) if item.commits else '',
             Text(label, style=PR_STYLE[item.action]),
             item.detail,

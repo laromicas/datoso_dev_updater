@@ -48,6 +48,12 @@ class GitPort(Protocol):
     def create_branch(self, repo: Path, branch: str, start: str | None = None) -> None:
         """Create (or reset) ``branch`` at ``start`` (default: the current commit) and switch to it."""
 
+    def branch_exists(self, repo: Path, branch: str) -> bool:
+        """Whether ``branch`` exists locally or on ``origin``."""
+
+    def force_branch(self, repo: Path, branch: str, start: str) -> None:
+        """Move the (not checked out) ``branch`` to ``start``."""
+
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         """Commit subjects in ``since..rev`` (all history of ``rev`` when ``since`` is None), newest first."""
 

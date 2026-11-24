@@ -6,6 +6,7 @@ It never commits: a repo with uncommitted changes is skipped, so nothing unrevie
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -49,6 +50,7 @@ class PrItem:
     draft_reason: str = ''  # set when a workspace floor is not on PyPI yet
     pr_url: str | None = None
     mark_ready: bool = False  # an open draft whose floors are now released
+    from_base: bool = False  # commits made on the base branch: move them to ``branch`` (named before running)
     done: bool = False
 
     @property
@@ -93,9 +95,7 @@ def plan_pr(ws: Workspace, pkg: Package, git: GitPort, gh: GhPort, pypi: PyPIPor
         dirty = git.changed_files(repo)
         commits = tuple(git.log_subjects(repo, f'origin/{base}', 'HEAD'))
         if branch == base:
-            if commits:
-                return PrItem(pkg, branch, PrAction.SKIPPED, f'commits on {base}: move them to a branch', commits)
-            return None
+            return _plan_from_base(ws, pkg, git, pypi, commits, dirty=bool(dirty)) if commits else None
         if branch == 'HEAD':
             return PrItem(pkg, branch, PrAction.SKIPPED, 'detached HEAD')
         if dirty:
@@ -118,6 +118,46 @@ def plan_pr(ws: Workspace, pkg: Package, git: GitPort, gh: GhPort, pypi: PyPIPor
         return PrItem(pkg, branch, action, detail, commits, unpushed, draft_reason, existing, mark_ready)
     except (GitError, GhError) as exc:
         return PrItem(pkg, '?', PrAction.ERROR, str(exc))
+
+
+def _plan_from_base(  # noqa: PLR0913
+    ws: Workspace, pkg: Package, git: GitPort, pypi: PyPIPort, commits: tuple[str, ...], *, dirty: bool
+) -> PrItem:
+    """Plan commits made on the base branch: offer to move them to a new branch, when that is safe."""
+    base = DEFAULT_BRANCH
+    if dirty:
+        return PrItem(pkg, base, PrAction.SKIPPED, f'commits on {base} and uncommitted changes', commits)
+    counts = git.ahead_behind(pkg.path)
+    if counts and counts[1]:
+        return PrItem(pkg, base, PrAction.SKIPPED, f'{base} diverged from origin/{base} (pull --rebase first)', commits)
+    draft_reason = unreleased_floors(ws, pkg, pypi)
+    detail = ', '.join(filter(None, [f'move from {base} to a new branch', draft_reason]))
+    return PrItem(pkg, '', PrAction.OPEN, detail, commits, unpushed=True, draft_reason=draft_reason, from_base=True)
+
+
+def name_branch(items: Iterable[PrItem], name: str | None) -> list[PrItem]:
+    """Give the moved commits their branch name, or skip them when there is none."""
+    if name:
+        return [replace(item, branch=name) if item.from_base else item for item in items]
+    skipped = f'commits on {DEFAULT_BRANCH}: give a branch name (--branch) to move them'
+    return [replace(item, action=PrAction.SKIPPED, detail=skipped) if item.from_base else item for item in items]
+
+
+def suggested_branch(items: Iterable[PrItem]) -> str | None:
+    """Most common feature branch of the run, to reuse for the moved commits."""
+    names = Counter(item.branch for item in items if not item.from_base and item.branch not in {'', '?', 'HEAD'})
+    names.pop(DEFAULT_BRANCH, None)
+    return names.most_common(1)[0][0] if names else None
+
+
+def move_from_base(item: PrItem, git: GitPort, gh: GhPort, base: str = DEFAULT_BRANCH) -> None:
+    """Create ``item.branch`` at the commits, then put the local base branch back on its upstream."""
+    repo = item.package.path
+    if git.branch_exists(repo, item.branch) or gh.pr_for_branch(repo, item.branch):
+        msg = f'branch {item.branch} already exists: pick another name'
+        raise GitError(msg)
+    git.create_branch(repo, item.branch)
+    git.force_branch(repo, base, f'origin/{base}')
 
 
 def plan_prs(  # noqa: PLR0913
@@ -144,6 +184,8 @@ def run_pr(item: PrItem, git: GitPort, gh: GhPort, text: PrText | None, base: st
         return item
     repo = item.package.path
     try:
+        if item.from_base:
+            move_from_base(item, git, gh, base)
         if item.unpushed:
             git.push(repo, item.branch)
         url = item.pr_url

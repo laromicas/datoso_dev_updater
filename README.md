@@ -61,8 +61,13 @@ import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` direct
 `datoso-dev pr` handles every repo whose current branch is not `master` and has commits ahead of `origin/master`:
 
 - **Never commits.** Commit yourself first; a repo with uncommitted (or untracked) files is skipped, so nothing
-  unreviewed (cookies, local configs) is pushed. Also skipped: commits made on `master`, a detached HEAD, a branch
-  behind its upstream, or one whose PR was already merged.
+  unreviewed (cookies, local configs) is pushed. Also skipped: a detached HEAD, a branch behind its upstream, or one
+  whose PR was already merged.
+- **Commits made on `master`** (local `master` ahead of `origin/master`): it asks for a new branch name (suggesting the
+  feature branch the other repos of the run use; `--branch NAME` answers it, empty skips the repo), creates that
+  branch at your commits, moves local `master` back to `origin/master`, then pushes and opens the PR like any other.
+  Nothing is lost: the commits are on the new branch before `master` moves. A name that already exists (locally or on
+  `origin`) is refused; a dirty or diverged `master` is skipped.
 - Pushes the branch (never forced) and opens a PR, or just pushes to the PR already open for that branch.
 - New PRs get one title and shared description, written in `$VISUAL`/`$EDITOR`: line 1 is the title, then the shared
   text, then a `=== <package>` section per new PR for a note about that repo only. Each PR also lists its own commits.

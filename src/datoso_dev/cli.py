@@ -29,7 +29,18 @@ from datoso_dev.pipeline import DONE, Waits, commit_pointers, release_batch, upd
 from datoso_dev.planner import Plan, PlanError, plan_release, released_version
 from datoso_dev.policy import violations
 from datoso_dev.ports import GhError, GhPort, GitPort, PyPIPort
-from datoso_dev.pr import PrAction, PrItem, PrText, default_title, editor_template, parse_template, plan_prs, run_prs
+from datoso_dev.pr import (
+    PrAction,
+    PrItem,
+    PrText,
+    default_title,
+    editor_template,
+    name_branch,
+    parse_template,
+    plan_prs,
+    run_prs,
+    suggested_branch,
+)
 from datoso_dev.prompts import Option, Prompter, QuestionaryPrompter
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.release import Action, Probe, ReleaseResult, probe_releases, run_releases
@@ -285,6 +296,14 @@ def _pr_text(todo: list[PrItem], title: str | None, body: str, *, yes: bool) -> 
     return text
 
 
+def _branch_name(items: list[PrItem], branch: str | None, *, yes: bool) -> str | None:
+    """Branch for commits made on master: --branch, else asked (suggesting the run's feature branch)."""
+    if branch or not any(item.from_base for item in items) or yes or not is_interactive():
+        return branch
+    name = typer.prompt('New branch for the commits on master', default=suggested_branch(items) or '')
+    return name.strip() or None
+
+
 def _edit_pr_text(template: str) -> PrText | None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / 'PULL_REQUEST.md'
@@ -305,6 +324,9 @@ def pr_command(  # noqa: PLR0913, PLR0917
     workspace: WorkspaceOpt = None,
     title: Annotated[str | None, typer.Option(help='Title of new PRs (skips the editor).')] = None,
     body: Annotated[str, typer.Option(help='Description of new PRs, with --title.')] = '',
+    branch: Annotated[
+        str | None, typer.Option(help='Branch to move commits made on master to (default: asked).')
+    ] = None,
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the plan and stop.')] = False,
     yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
 ) -> None:
@@ -325,9 +347,11 @@ def pr_command(  # noqa: PLR0913, PLR0917
     if not items:
         console.print('[green]No feature branches with commits to propose.[/]')
         return
-    todo = [item for item in items if item.actionable]
     errors = any(item.action is PrAction.ERROR for item in items)
     console.print(pr_table(items, title='pr (dry run — nothing changed)' if dry_run else 'pr — plan'))
+    if not dry_run and any(item.from_base for item in items):
+        items = name_branch(items, _branch_name(items, branch, yes=yes))
+    todo = [item for item in items if item.actionable]
     if dry_run or not todo:
         if not todo:
             console.print('[green]Nothing to push or open.[/]')

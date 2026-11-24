@@ -144,3 +144,50 @@ def test_unknown_package(fakes):
     ws, _, _ = fakes
     result = invoke(ws, 'nope')
     assert result.exit_code == 2
+
+
+def on_master(ws, git) -> Path:
+    path = ws.packages['datoso_seed_redump'].path
+    git.repos[path] = FakeRepo(subjects=['Local fix'], ahead=1)
+    return path
+
+
+def test_master_commits_get_the_asked_branch(fakes, monkeypatch: pytest.MonkeyPatch):
+    ws, git, gh = fakes
+    path = on_master(ws, git)
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    result = invoke(ws, '--title', 'Fix', input='feat/fix\ny\n')
+    assert result.exit_code == 0, result.output
+    assert 'New branch for the commits on master' in result.output
+    assert git.forced == [(path, 'master', 'origin/master')]
+    assert gh.created[0]['head'] == 'feat/fix'
+
+
+def test_master_commits_with_branch_option(fakes):
+    ws, git, gh = fakes
+    on_master(ws, git)
+    result = invoke(ws, '--branch', 'feat/fix', '--title', 'Fix', '--yes')
+    assert result.exit_code == 0, result.output
+    assert gh.created[0]['head'] == 'feat/fix'
+
+
+def test_master_commits_without_a_name_are_skipped(fakes, monkeypatch: pytest.MonkeyPatch):
+    ws, git, gh = fakes
+    on_master(ws, git)
+    result = invoke(ws, '--title', 'Fix', '--yes')
+    assert result.exit_code == 0, result.output
+    assert 'Nothing to push or open' in result.output
+    assert git.forced == []
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    result = invoke(ws, '--title', 'Fix', input=' \n')
+    assert result.exit_code == 0, result.output
+    assert gh.created == []
+
+
+def test_dry_run_does_not_ask_for_a_branch(fakes, monkeypatch: pytest.MonkeyPatch):
+    ws, git, _ = fakes
+    on_master(ws, git)
+    monkeypatch.setattr(cli, 'is_interactive', lambda: True)
+    result = invoke(ws, '--dry-run')
+    assert result.exit_code == 0, result.output
+    assert 'New branch' not in result.output

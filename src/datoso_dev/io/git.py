@@ -88,6 +88,17 @@ class Git:
         """Create (or reset) ``branch`` at ``start`` (default: the current commit) and switch to it."""
         self._run(repo, 'switch', '--quiet', '--no-track', '-C', branch, *([start] if start else []))
 
+    def branch_exists(self, repo: Path, branch: str) -> bool:
+        """Whether ``branch`` exists locally or on ``origin``."""
+        refs = (f'refs/heads/{branch}', f'refs/remotes/origin/{branch}')
+        return any(
+            self._run(repo, 'rev-parse', '--verify', '--quiet', ref, check=False).returncode == 0 for ref in refs
+        )
+
+    def force_branch(self, repo: Path, branch: str, start: str) -> None:
+        """Move the (not checked out) ``branch`` to ``start``."""
+        self._run(repo, 'branch', '--force', branch, start)
+
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         """Commit subjects in ``since..rev`` (all of ``rev``'s history when ``since`` is None), newest first."""
         out = self._out(repo, 'log', '--format=%s', f'{since}..{rev}' if since else rev)

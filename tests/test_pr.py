@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from datoso_dev.pr import (
     default_title,
     editor_template,
     link_prs,
+    name_branch,
     parse_template,
     plan_pr,
     plan_prs,
@@ -21,6 +23,7 @@ from datoso_dev.pr import (
     pr_ref,
     run_pr,
     run_prs,
+    suggested_branch,
     unreleased_floors,
     with_related,
 )
@@ -60,10 +63,58 @@ def test_clean_master_has_no_feature_work(ws, released):
     assert plan_pr(ws, ws.packages['datoso_seed_redump'], git, FakeGh(), released) is None
 
 
-def test_commits_on_master_are_skipped(ws, released):
-    git = setup(ws, datoso_seed_redump=FakeRepo(subjects=['oops']))
+def test_commits_on_master_are_offered_a_branch(ws, released):
+    git = setup(ws, datoso_seed_redump=FakeRepo(subjects=['Local fix'], ahead=1))
     item = plan_pr(ws, ws.packages['datoso_seed_redump'], git, FakeGh(), released)
-    assert (item.action, item.detail) == (PrAction.SKIPPED, 'commits on master: move them to a branch')
+    assert (item.action, item.branch, item.from_base, item.unpushed) == (PrAction.OPEN, '', True, True)
+    assert item.detail == 'move from master to a new branch'
+
+
+@pytest.mark.parametrize(
+    ('repo', 'detail'),
+    [
+        (FakeRepo(subjects=['x'], changed=['a.py']), 'commits on master and uncommitted changes'),
+        (FakeRepo(subjects=['x'], ahead=1, behind=1), 'master diverged from origin/master (pull --rebase first)'),
+    ],
+)
+def test_unsafe_master_commits_are_skipped(ws, released, repo, detail):
+    item = plan_pr(ws, ws.packages['datoso_seed_redump'], setup(ws, datoso_seed_redump=repo), FakeGh(), released)
+    assert (item.action, item.detail) == (PrAction.SKIPPED, detail)
+
+
+def test_name_branch_and_suggestion(ws):
+    moved = PrItem(ws.packages['datoso_seed_redump'], '', PrAction.OPEN, from_base=True)
+    other = PrItem(ws.packages['datoso'], 'feat/a', PrAction.OPEN)
+    assert suggested_branch([moved, other, replace(other, branch='master')]) == 'feat/a'
+    assert suggested_branch([moved]) is None
+    named = name_branch([moved, other], 'feat/b')
+    assert [item.branch for item in named] == ['feat/b', 'feat/a']
+    skipped = name_branch([moved, other], None)
+    assert skipped[0].action is PrAction.SKIPPED
+    assert '--branch' in skipped[0].detail
+    assert skipped[1] is other
+
+
+def test_run_moves_master_commits_then_opens(ws):
+    pkg = ws.packages['datoso_seed_redump']
+    git, gh = setup(ws), FakeGh()
+    item = PrItem(pkg, 'feat/b', PrAction.OPEN, commits=('Local fix',), unpushed=True, from_base=True)
+    result = run_pr(item, git, gh, PrText('Fix'))
+    assert git.branch_starts == [(pkg.path, 'feat/b', None)]
+    assert git.forced == [(pkg.path, 'master', 'origin/master')]
+    assert git.pushes == [(pkg.path, 'feat/b', False)]
+    assert gh.created[0]['head'] == 'feat/b'
+    assert result.done
+
+
+def test_run_refuses_an_existing_branch(ws):
+    pkg = ws.packages['datoso_seed_redump']
+    git, gh = setup(ws), FakeGh()
+    git.repos[pkg.path].branches.add('feat/b')
+    result = run_pr(PrItem(pkg, 'feat/b', PrAction.OPEN, unpushed=True, from_base=True), git, gh, PrText('T'))
+    assert (result.action, result.detail) == (PrAction.ERROR, 'branch feat/b already exists: pick another name')
+    assert git.forced == []
+    assert gh.created == []
 
 
 @pytest.mark.parametrize(
@@ -192,8 +243,6 @@ def test_run_pr_opens_draft_and_marks_ready(ws):
 
 
 def replace_action(item: PrItem, action: PrAction, **kwargs: object) -> PrItem:
-    from dataclasses import replace  # noqa: PLC0415
-
     return replace(item, action=action, done=False, **kwargs)
 
 

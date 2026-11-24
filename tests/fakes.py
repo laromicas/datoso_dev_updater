@@ -32,6 +32,7 @@ class FakeGit:
         self.commits: list[tuple[Path, list[str], str]] = []
         self.pushes: list[tuple[Path, str, bool]] = []
         self.branch_starts: list[tuple[Path, str, str | None]] = []
+        self.forced: list[tuple[Path, str, str]] = []
 
     def _repo(self, method: str, repo: Path) -> FakeRepo:
         self.calls.append((method, repo))
@@ -84,6 +85,13 @@ class FakeGit:
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         self._repo('push', repo)
         self.pushes.append((repo, branch, force))
+
+    def branch_exists(self, repo: Path, branch: str) -> bool:
+        return branch in self._repo('branch_exists', repo).branches
+
+    def force_branch(self, repo: Path, branch: str, start: str) -> None:
+        self._repo('force_branch', repo)
+        self.forced.append((repo, branch, start))
 
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         return list(self._repo('log_subjects', repo).subjects)
