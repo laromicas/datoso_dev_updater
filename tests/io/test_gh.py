@@ -130,3 +130,63 @@ def test_release_notes_and_edit(tmp_path: Path):
     notes = tmp_path / 'notes.md'
     Gh(runner=run).release_edit_notes(tmp_path, 'v1.1.0', notes)
     assert run.calls[1][0] == ['gh', 'release', 'edit', 'v1.1.0', '--notes-file', str(notes)]
+
+
+def test_pr_create_draft(tmp_path: Path):
+    run = Runner(stdout='https://github.com/o/r/pull/5\n')
+    Gh(runner=run).pr_create(tmp_path, base='master', head='b', title='T', body='B', draft=True)
+    assert run.calls[0][0][-1] == '--draft'
+
+
+def test_pr_body_edit_draft_and_ready(tmp_path: Path):
+    url = 'https://github.com/o/r/pull/5'
+    run = Runner(stdout='true\n')
+    gh = Gh(runner=run)
+    assert gh.pr_is_draft(tmp_path, url) is True
+    assert gh.pr_body(tmp_path, url) == 'true'
+    gh.pr_edit_body(tmp_path, url, 'New')
+    gh.pr_ready(tmp_path, url)
+    assert [argv[1:] for argv, _ in run.calls] == [
+        ['pr', 'view', url, '--json', 'isDraft', '--jq', '.isDraft'],
+        ['pr', 'view', url, '--json', 'body', '--jq', '.body'],
+        ['api', '--method', 'PATCH', 'repos/{owner}/{repo}/pulls/5', '-f', 'body=New'],
+        ['pr', 'ready', url],
+    ]
+
+
+def test_pr_list_parses_authors_and_checks(tmp_path: Path):
+    import json  # noqa: PLC0415
+
+    listed = [
+        {'number': 3, 'title': 'T', 'headRefName': 'feat/x', 'url': 'u3', 'author': {'login': 'me'}, 'isDraft': False,
+         'mergeable': 'MERGEABLE', 'statusCheckRollup': [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]},
+        {'number': 4, 'title': 'U', 'headRefName': 'b', 'url': 'u4', 'author': None, 'isDraft': True,
+         'mergeable': None, 'statusCheckRollup': None},
+    ]  # fmt: skip
+    run = Runner(stdout=json.dumps(listed))
+    first, second = Gh(runner=run).pr_list(tmp_path)
+    assert (first.number, first.author, first.branch, first.checks) == (3, 'me', 'feat/x', Checks.PASSED)
+    assert (second.author, second.draft, second.mergeable, second.checks) == ('', True, 'UNKNOWN', Checks.NONE)
+    assert run.calls[0][0][1:8] == ['pr', 'list', '--state', 'open', '--limit', '100', '--json']
+
+
+@pytest.mark.parametrize(
+    ('checks', 'state'),
+    [
+        ([], Checks.NONE),
+        ([{'conclusion': 'SUCCESS'}, {'state': 'SUCCESS'}, {'conclusion': 'SKIPPED'}], Checks.PASSED),
+        ([{'conclusion': 'SUCCESS'}, {'status': 'IN_PROGRESS', 'conclusion': ''}], Checks.PENDING),
+        ([{'state': 'PENDING'}, {'conclusion': 'FAILURE'}], Checks.FAILED),
+        ([{'state': 'ERROR'}], Checks.FAILED),
+    ],
+)
+def test_rollup(checks, state):
+    from datoso_dev.io.gh import rollup  # noqa: PLC0415
+
+    assert rollup(checks) == state
+
+
+def test_current_user(tmp_path: Path):
+    run = Runner(stdout='laromicas\n')
+    assert Gh(runner=run).current_user(tmp_path) == 'laromicas'
+    assert run.calls[0][0] == ['gh', 'api', 'user', '--jq', '.login']

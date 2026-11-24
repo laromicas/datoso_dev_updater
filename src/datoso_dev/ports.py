@@ -5,6 +5,7 @@ Real implementations live in ``datoso_dev.io``; tests inject in-memory fakes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -48,6 +49,12 @@ class GitPort(Protocol):
     def create_branch(self, repo: Path, branch: str, start: str | None = None) -> None:
         """Create (or reset) ``branch`` at ``start`` (default: the current commit) and switch to it."""
 
+    def branch_exists(self, repo: Path, branch: str) -> bool:
+        """Whether ``branch`` exists locally or on ``origin``."""
+
+    def force_branch(self, repo: Path, branch: str, start: str) -> None:
+        """Move the (not checked out) ``branch`` to ``start``."""
+
     def log_subjects(self, repo: Path, since: str | None, rev: str) -> list[str]:
         """Commit subjects in ``since..rev`` (all history of ``rev`` when ``since`` is None), newest first."""
 
@@ -70,14 +77,46 @@ class Checks(StrEnum):
     NONE = 'none'  # no checks reported (yet)
 
 
+@dataclass(frozen=True)
+class PrInfo:
+    """An open pull request, as listed by GitHub."""
+
+    number: int
+    title: str
+    branch: str
+    url: str
+    author: str
+    draft: bool = False
+    mergeable: str = 'UNKNOWN'  # MERGEABLE, CONFLICTING or UNKNOWN
+    checks: Checks = Checks.NONE
+
+
 class GhPort(Protocol):
     """GitHub pull-request operations, run in a repository checkout."""
 
     def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
         """URL of the PR in ``state`` (``open``, ``merged``) whose head is ``head``, or ``None``."""
 
-    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
-        """Open a PR and return its URL."""
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str, draft: bool = False) -> str:  # noqa: PLR0913
+        """Open a PR (a draft when ``draft``) and return its URL."""
+
+    def pr_body(self, repo: Path, pr_url: str) -> str:
+        """Return the description of a PR."""
+
+    def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
+        """Replace the description of a PR."""
+
+    def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
+        """Whether a PR is a draft."""
+
+    def pr_ready(self, repo: Path, pr_url: str) -> None:
+        """Mark a draft PR ready for review."""
+
+    def pr_list(self, repo: Path) -> list[PrInfo]:
+        """Open PRs of the repository."""
+
+    def current_user(self, repo: Path) -> str:
+        """Login of the account ``gh`` is authenticated as."""
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as."""

@@ -26,6 +26,11 @@ datoso-dev ci status           # is each repo's .github/workflows/ci.yml in line
 datoso-dev ci sync --dry-run   # report what would change for every package
 datoso-dev ci sync redump tdc  # only these packages (asks once; --yes to skip)
 datoso-dev ci sync --all       # every package (asks once; --yes to skip)
+datoso-dev pr --dry-run        # repos on a feature branch: what would be pushed / opened / updated
+datoso-dev pr                  # push them and open or update one linked PR per repo (title/description in $EDITOR)
+datoso-dev pr redump --title 'Fix X' --body 'Why' --yes   # no editor, no question
+datoso-dev prs                 # every open PR of every repo: author, CI, mergeable
+datoso-dev prs --merge         # pick PRs to squash-merge (only yours), then switch those repos to master
 ```
 
 `datoso-dev ci` is **interactive by default**. It checks every repo, shows a status table (will open PR / will update
@@ -52,6 +57,40 @@ updates the branch when a PR is already open). An open PR whose branch already h
 `origin`. Targets: the plugin and every seed (core keeps its own `pytest.yml`; skipped packages need
 `--include-skipped`). The template is `src/datoso_dev/templates/ci.yml`: install from PyPI floors, `ruff check` (pyflakes rules only),
 import every module, `datoso doctor <seed>`, and `pytest` when a `tests/` directory exists.
+
+## Pull requests for a change across repos
+
+`datoso-dev pr` handles every repo whose current branch is not `master` and has commits ahead of `origin/master`:
+
+- **Never commits.** Commit yourself first; a repo with uncommitted (or untracked) files is skipped, so nothing
+  unreviewed (cookies, local configs) is pushed. Also skipped: a detached HEAD, a branch behind its upstream, or one
+  whose PR was already merged.
+- **Commits made on `master`** (local `master` ahead of `origin/master`): it asks for a new branch name (suggesting the
+  feature branch the other repos of the run use; `--branch NAME` answers it, empty skips the repo), creates that
+  branch at your commits, moves local `master` back to `origin/master`, then pushes and opens the PR like any other.
+  Nothing is lost: the commits are on the new branch before `master` moves. A name that already exists (locally or on
+  `origin`) is refused; a dirty or diverged `master` is skipped.
+- Pushes the branch (never forced) and opens a PR, or just pushes to the PR already open for that branch.
+- New PRs get one title and shared description, written in `$VISUAL`/`$EDITOR`: line 1 is the title, then the shared
+  text, then a `=== <package>` section per new PR for a note about that repo only. Each PR also lists its own commits.
+  `--title`/`--body` skip the editor (required without a terminal); an empty title cancels.
+- A new PR is a **draft** when a workspace floor it needs (e.g. `datoso>=1.3.0`) is not on PyPI yet, so its red CI
+  means "waiting for core". Running `pr` again once that version is published marks it ready for review.
+- Every PR of the run gets a "Related:" line linking the others (`owner/repo#N`), refreshed on each run.
+
+It shows the plan and asks once before pushing. Release PRs are still `datoso-dev release`'s job: merge these first.
+
+## Listing and merging open PRs
+
+`datoso-dev prs [repo…]` lists the open PRs of every repository (core, plugin, seeds, this tool): number, title,
+branch, author, CI (passed / failed / pending / none) and whether it can be merged.
+
+`--merge` opens a checkbox of those PRs. **Only PRs opened by the account `gh` is logged in as** can be picked; other
+people's (and bots'), drafts and PRs with conflicts are listed but disabled with the reason. PRs with passing (or no) CI
+are pre-ticked. After one confirmation each PR is re-read from GitHub (still open, still yours), squash-merged and its
+branch deleted; the merged repos are then switched to `master` and pulled (like `sync`), ready for `release`.
+Without a terminal pass `--yes`: it merges every green PR of yours, plus the ones with failing CI with
+`--include-failing`. Merging doesn't release anything: run `datoso-dev release` afterwards.
 
 ## Releasing
 

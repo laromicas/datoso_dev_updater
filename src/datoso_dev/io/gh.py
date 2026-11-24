@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from datoso_dev.ports import Checks, GhError
+from datoso_dev.ports import Checks, GhError, PrInfo
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 PENDING_EXIT = 8  # gh pr checks: some checks are still running
+
+
+FAILED_STATES = {'FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'}
+PASSED_STATES = {'SUCCESS', 'NEUTRAL', 'SKIPPED'}
+
+
+def rollup(checks: list[dict]) -> Checks:
+    """One CI state from a PR's check runs (``conclusion``) and commit statuses (``state``)."""
+    states = [check.get('conclusion') or check.get('state') or check.get('status') or '' for check in checks]
+    if any(state in FAILED_STATES for state in states):
+        return Checks.FAILED
+    if any(state not in PASSED_STATES for state in states):
+        return Checks.PENDING
+    return Checks.PASSED if states else Checks.NONE
 
 
 class Gh:
@@ -41,10 +56,45 @@ class Gh:
         url = self._out(repo, 'pr', 'list', '--head', head, '--state', state, '--json', 'url', '--jq', '.[0].url // ""')
         return url or None
 
-    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
-        """Open a PR and return its URL (the last line gh prints)."""
-        out = self._out(repo, 'pr', 'create', '--base', base, '--head', head, '--title', title, '--body', body)
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str, draft: bool = False) -> str:  # noqa: PLR0913
+        """Open a PR (a draft when ``draft``) and return its URL (the last line gh prints)."""
+        args = ['pr', 'create', '--base', base, '--head', head, '--title', title, '--body', body]
+        out = self._out(repo, *args, *(['--draft'] if draft else []))
         return out.splitlines()[-1].strip()
+
+    def pr_body(self, repo: Path, pr_url: str) -> str:
+        """Return the description of a PR."""
+        return self._out(repo, 'pr', 'view', pr_url, '--json', 'body', '--jq', '.body')
+
+    def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
+        """Replace the description of a PR (REST: `gh pr edit` fails on the sunset Projects classic API)."""
+        number = pr_url.rstrip('/').rsplit('/', 1)[-1]
+        self._out(repo, 'api', '--method', 'PATCH', f'repos/{{owner}}/{{repo}}/pulls/{number}', '-f', f'body={body}')
+
+    def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
+        """Whether a PR is a draft."""
+        return self._out(repo, 'pr', 'view', pr_url, '--json', 'isDraft', '--jq', '.isDraft') == 'true'
+
+    def pr_ready(self, repo: Path, pr_url: str) -> None:
+        """Mark a draft PR ready for review."""
+        self._out(repo, 'pr', 'ready', pr_url)
+
+    def pr_list(self, repo: Path) -> list[PrInfo]:
+        """Open PRs of the repository, with author, draft, mergeable and the rolled-up CI state."""
+        fields = 'number,title,headRefName,url,author,isDraft,mergeable,statusCheckRollup'
+        out = self._out(repo, 'pr', 'list', '--state', 'open', '--limit', '100', '--json', fields)
+        return [
+            PrInfo(
+                number=pr['number'], title=pr['title'], branch=pr['headRefName'], url=pr['url'],
+                author=(pr.get('author') or {}).get('login', ''), draft=pr['isDraft'],
+                mergeable=pr.get('mergeable') or 'UNKNOWN', checks=rollup(pr.get('statusCheckRollup') or []),
+            )
+            for pr in json.loads(out or '[]')
+        ]  # fmt: skip
+
+    def current_user(self, repo: Path) -> str:
+        """Login of the account ``gh`` is authenticated as."""
+        return self._out(repo, 'api', 'user', '--jq', '.login')
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as on the base branch."""

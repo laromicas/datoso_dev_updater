@@ -187,3 +187,20 @@ def test_log_subjects(remote_pair):
     commit(work, 'b.txt')
     assert git.log_subjects(work, since='v1.0.0', rev='HEAD') == ['add b.txt', 'add a.txt']
     assert git.log_subjects(work, since=None, rev='HEAD') == ['add b.txt', 'add a.txt', 'add README.md']
+
+
+def test_move_master_commits_to_a_branch(remote_pair):
+    """What `pr` does with commits made on master: branch at them, then master back to origin/master."""
+    _, work, _ = remote_pair
+    commit(work, 'feature.txt')
+    git = Git()
+    assert not git.branch_exists(work, 'feat/x')
+    git.create_branch(work, 'feat/x')
+    git.force_branch(work, 'master', 'origin/master')
+    assert git.branch_exists(work, 'feat/x')
+    assert git.log_subjects(work, 'origin/master', 'HEAD') == ['add feature.txt']
+    assert sh(work, 'rev-parse', 'master') == sh(work, 'rev-parse', 'origin/master')
+    git.push(work, 'feat/x')
+    sh(work, 'switch', '-q', 'master')
+    sh(work, 'branch', '-q', '-D', 'feat/x')
+    assert git.branch_exists(work, 'feat/x')  # still on origin
