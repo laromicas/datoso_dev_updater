@@ -30,7 +30,7 @@ from datoso_dev.planner import Plan, PlanError, plan_release, released_version
 from datoso_dev.pointers import commit_pointers as commit_workspace_pointers
 from datoso_dev.pointers import plan_pointers, workspace_blocker
 from datoso_dev.policy import violations
-from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PyPIPort
+from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PrInfo, PyPIPort
 from datoso_dev.pr import (
     PrAction,
     PrItem,
@@ -44,17 +44,18 @@ from datoso_dev.pr import (
     suggested_branch,
 )
 from datoso_dev.prompts import Option, Prompter, QuestionaryPrompter
-from datoso_dev.prs import OpenPr, list_open, merge
+from datoso_dev.prs import OpenPr, branch_prs, list_open, merge
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.release import Action, Probe, ReleaseResult, probe_releases, run_releases
 from datoso_dev.release import Outcome as ReleaseOutcome
 from datoso_dev.release_menu import choose_release, target_version
 from datoso_dev.state import DEFAULT_BRANCH, PackageState, Status, collect_states, latest_release_tag
-from datoso_dev.sync import Outcome, sync_all
+from datoso_dev.sync import Outcome, SyncResult, sync_all
 from datoso_dev.ui import (
     ci_status_table,
     ci_sync_table,
     deps_table,
+    open_pr_branches_table,
     plan_table,
     pointers_table,
     pr_table,
@@ -198,14 +199,71 @@ def sync(
     workspace: WorkspaceOpt = None,
     dry_run: Annotated[bool, typer.Option('--dry-run', help='Only fetch and report; change nothing.')] = False,
     branch: Annotated[str, typer.Option(help='Branch to switch to and update.')] = DEFAULT_BRANCH,
+    yes: Annotated[
+        bool, typer.Option('--yes', '-y', help='Do not ask: also switch repos whose branch has an open PR of yours.')
+    ] = False,
 ) -> None:
-    """Fetch every repo; switch clean ones to the default branch and pull --rebase. Dirty repos are skipped."""
+    """Fetch every repo; switch clean ones to the default branch and pull --rebase. Dirty repos are skipped.
+
+    Repos on a branch with an open PR of yours are listed first: you choose to keep them on their branch (default
+    without a terminal), switch them too, or cancel.
+    """
     ws = resolve_workspace(workspace)
+    git = make_git()
+    open_prs = _open_pr_branches(ws, git, ws.submodule_paths)
+    paths = list(ws.submodule_paths)
+    kept: dict[Path, PrInfo] = {}
+    if open_prs and not dry_run:
+        kept = _keep_open_pr_branches(open_prs, yes=yes)
+        paths = [path for path in paths if path not in kept]
     with console.status('Syncing repositories…', spinner='dots'):
-        results = sync_all(ws.submodule_paths, make_git(), branch=branch, dry_run=dry_run)
+        synced = {result.path: result for result in sync_all(paths, git, branch=branch, dry_run=dry_run)}
+    for path, pr in (open_prs if dry_run else kept).items():
+        detail = f'your PR #{pr.number} is open on {pr.branch}' + ('' if dry_run else ': kept on it')
+        synced[path] = (
+            SyncResult(path, Outcome.SKIPPED, detail, dry_run=dry_run)
+            if not dry_run
+            else replace(synced[path], detail=', '.join(filter(None, [synced[path].detail, detail])))
+        )
+    results = [synced[path] for path in ws.submodule_paths if path in synced]
     console.print(sync_table(results, dry_run=dry_run))
     if any(r.outcome is Outcome.ERROR for r in results):
         raise typer.Exit(1)
+
+
+def _open_pr_branches(ws: Workspace, git: GitPort, paths: Iterable[Path]) -> dict[Path, PrInfo]:
+    """Repos on a branch with an open PR of yours (empty, with a warning, when GitHub can't be asked)."""
+    gh = make_gh()
+    with console.status('Checking open pull requests…', spinner='dots'):
+        try:
+            return branch_prs(paths, git, gh, gh.current_user(ws.root))
+        except GhError as exc:
+            console.print(f'[yellow]Could not check open PRs ({exc}); branches with unmerged PRs are not flagged.[/]')
+            return {}
+
+
+def _keep_open_pr_branches(open_prs: dict[Path, PrInfo], *, yes: bool) -> dict[Path, PrInfo]:
+    """Ask what to do with repos whose branch has an open PR of yours; return the ones to leave alone."""
+    console.print(open_pr_branches_table(open_prs))
+    if yes:
+        return {}
+    if not is_interactive():
+        console.print('[yellow]Not a terminal: these stay on their branch (pass --yes to switch them too).[/]')
+        return open_prs
+    choice = make_prompter().select(
+        f'{len(open_prs)} repo(s) are on a branch with an open PR of yours. Switching them to master hides that '
+        'unmerged work locally (editable installs run master). Continue?',
+        [
+            Option('Sync the others, keep these on their branch', 'keep'),
+            Option('Switch these to master too', 'switch'),
+            Option('Cancel', 'cancel'),
+        ],
+        default='keep',
+    )
+    if choice in {None, 'cancel'}:
+        console.print('Cancelled.')
+        raise typer.Exit(1)
+    return open_prs if choice == 'keep' else {}
 
 
 IncludeSkippedOpt = Annotated[
@@ -485,7 +543,15 @@ def pointers_command(
     with console.status('Checking submodules…', spinner='dots'):
         try:
             git.fetch(ws.root)
-            pointers = plan_pointers(ws, git)
+            moved = [
+                path for path in ws.submodule_paths if str(path.relative_to(ws.root)) in git.changed_files(ws.root)
+            ]
+            gh = make_gh()
+            try:
+                open_prs = branch_prs(moved, git, gh, gh.current_user(ws.root)) if moved else {}
+            except GhError:
+                open_prs = {}
+            pointers = plan_pointers(ws, git, open_prs=open_prs)
             blocked = workspace_blocker(ws, git)
         except GitError as exc:
             _fail(str(exc), 1)

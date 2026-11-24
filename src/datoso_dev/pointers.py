@@ -5,11 +5,11 @@ It never adds anything: a submodule the workspace doesn't record yet, or any unt
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from datoso_dev.ports import GitError, GitPort
+from datoso_dev.ports import GitError, GitPort, PrInfo
 from datoso_dev.state import DEFAULT_BRANCH
 from datoso_dev.workspace import Workspace
 
@@ -33,13 +33,14 @@ class Pointer:
         return self.path.name
 
 
-def _blocker(git: GitPort, repo: Path, default_branch: str) -> str:
+def _blocker(git: GitPort, repo: Path, default_branch: str, pr: PrInfo | None = None) -> str:
     """Why the submodule's commit shouldn't be recorded yet (empty when it can)."""
     if git.changed_files(repo):
         return 'uncommitted changes (commit them in the repo first)'
     branch = git.current_branch(repo)
     if branch != default_branch:
-        return f'on {branch}, not {default_branch} (merge it first)'
+        why = f'your PR #{pr.number} is still open' if pr is not None else f'not {default_branch}'
+        return f'on {branch}: {why} (merge it first)'
     counts = git.ahead_behind(repo)
     if counts is None:
         return 'no upstream'
@@ -51,8 +52,15 @@ def _blocker(git: GitPort, repo: Path, default_branch: str) -> str:
     return ''
 
 
-def plan_pointers(ws: Workspace, git: GitPort, *, default_branch: str = DEFAULT_BRANCH) -> list[Pointer]:
+def plan_pointers(
+    ws: Workspace,
+    git: GitPort,
+    *,
+    open_prs: Mapping[Path, PrInfo] | None = None,
+    default_branch: str = DEFAULT_BRANCH,
+) -> list[Pointer]:
     """Every moved pointer of the workspace, with what it adds and whether it can be committed."""
+    open_prs = open_prs or {}
     changed = set(git.changed_files(ws.root))
     pointers = []
     for repo in ws.submodule_paths:
@@ -72,7 +80,7 @@ def plan_pointers(ws: Workspace, git: GitPort, *, default_branch: str = DEFAULT_
                 commits = tuple(git.log_subjects(repo, old, 'HEAD'))
             except GitError:
                 commits = ()  # the old commit is gone (rewritten history): still recordable
-            pointers.append(Pointer(repo, old, new, commits, _blocker(git, repo, default_branch)))
+            pointers.append(Pointer(repo, old, new, commits, _blocker(git, repo, default_branch, open_prs.get(repo))))
         except GitError as exc:
             pointers.append(Pointer(repo, blocker=str(exc)))
     return pointers

@@ -21,7 +21,8 @@ datoso-dev status              # dashboard: version, last tag, PyPI, unreleased 
 datoso-dev status --offline    # no git fetch, no PyPI / GitHub queries
 datoso-dev status --json       # machine-readable
 datoso-dev sync --dry-run      # fetch all repos and show what would change
-datoso-dev sync                # switch clean repos to master and pull --rebase (dirty repos are skipped)
+datoso-dev sync                # switch clean repos to master and pull --rebase (dirty repos are skipped;
+                               # repos on a branch with an open PR of yours are listed and you choose: keep / switch / cancel)
 datoso-dev ci                  # interactive menu for the managed CI workflow (same as `ci sync` with no names)
 datoso-dev ci status           # is each repo's .github/workflows/ci.yml in line with the template? (offline)
 datoso-dev ci sync --dry-run   # report what would change for every package
@@ -102,7 +103,7 @@ to commit, how many commits and the newest. It **only updates pointers the works
 anything: a submodule that isn't recorded yet (new in `.gitmodules`) is listed as blocked, and untracked files are
 ignored, so adding those stays a manual `git submodule add` / `git add`. It updates only pointers whose repo is
 **clean, on `master` and pushed**
-(otherwise the row says why), so the workspace never points at local-only or unmerged work. It commits just those
+(otherwise the row says why, naming your open PR when the repo sits on its branch), so the workspace never points at local-only or unmerged work. It commits just those
 submodule paths (untracked files and other changes in `datoso_dev` are left alone) with a message like
 `Pointers: a, b` plus each repo's newest commit subjects, and pushes. The workspace itself must be on `master` and not
 behind `origin`.

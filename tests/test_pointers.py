@@ -11,7 +11,7 @@ from datoso_dev import cli
 from datoso_dev.pointers import Pointer, commit_message, plan_pointers, workspace_blocker
 from datoso_dev.workspace import discover
 
-from .fakes import FakeGit, FakeRepo
+from .fakes import FakeGh, FakeGit, FakeRepo
 
 runner = CliRunner()
 REDUMP, TDC = 'datoso_seed_redump', 'datoso_plugin_internetarchive'
@@ -50,7 +50,7 @@ def test_plan_lists_moved_pointers_with_their_commits(ws):
     ('repo', 'blocker'),
     [
         (moved(changed=['x.py']), 'uncommitted changes (commit them in the repo first)'),
-        (moved(branch='feat/x'), 'on feat/x, not master (merge it first)'),
+        (moved(branch='feat/x'), 'on feat/x: not master (merge it first)'),
         (moved(ahead=2), '2 unpushed commit(s)'),
         (moved(behind=1), 'behind origin by 1 (pull first)'),
         (moved(has_upstream=False), 'no upstream'),
@@ -92,8 +92,9 @@ def test_workspace_blocker(ws, root, reason):
 
 @pytest.fixture
 def use(monkeypatch: pytest.MonkeyPatch):
-    def _use(git: FakeGit) -> FakeGit:
+    def _use(git: FakeGit, gh: FakeGh | None = None) -> FakeGit:
         monkeypatch.setattr(cli, 'make_git', lambda: git)
+        monkeypatch.setattr(cli, 'make_gh', lambda: gh or FakeGh())
         monkeypatch.delenv(cli.WORKSPACE_ENV, raising=False)
         return git
 
@@ -190,3 +191,22 @@ def test_untracked_files_in_the_workspace_are_ignored(ws, use):
     assert result.exit_code == 0
     assert 'Every submodule pointer is committed' in result.output
     assert git.commits == []
+
+
+def test_blocked_branch_names_your_open_pr(ws, use):
+    from datoso_dev.ports import PrInfo  # noqa: PLC0415
+
+    gh = FakeGh()
+    gh.listed = {ws.root / REDUMP: [PrInfo(10, 'Add pointers', 'feat/x', 'https://github.com/o/r/pull/10', 'me')]}
+    git = use(make_git(ws, root_with(REDUMP), **{REDUMP: moved(branch='feat/x')}), gh)
+    result = runner.invoke(cli.app, ['pointers', '-w', str(ws.root), '--dry-run'], env={'COLUMNS': '200'})
+    assert 'on feat/x: your PR #10 is still open (merge it first)' in result.output
+    assert git.commits == []
+
+
+def test_github_unavailable_still_plans(ws, use):
+    gh = FakeGh()
+    gh.fail_list = {ws.root / REDUMP}
+    use(make_git(ws, root_with(REDUMP), **{REDUMP: moved(branch='feat/x')}), gh)
+    result = runner.invoke(cli.app, ['pointers', '-w', str(ws.root), '--dry-run'], env={'COLUMNS': '200'})
+    assert 'on feat/x: not master (merge it first)' in result.output
