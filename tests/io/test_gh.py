@@ -149,6 +149,6 @@ def test_pr_body_edit_draft_and_ready(tmp_path: Path):
     assert [argv[1:] for argv, _ in run.calls] == [
         ['pr', 'view', url, '--json', 'isDraft', '--jq', '.isDraft'],
         ['pr', 'view', url, '--json', 'body', '--jq', '.body'],
-        ['pr', 'edit', url, '--body', 'New'],
+        ['api', '--method', 'PATCH', 'repos/{owner}/{repo}/pulls/5', '-f', 'body=New'],
         ['pr', 'ready', url],
     ]

@@ -52,8 +52,9 @@ class Gh:
         return self._out(repo, 'pr', 'view', pr_url, '--json', 'body', '--jq', '.body')
 
     def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
-        """Replace the description of a PR."""
-        self._out(repo, 'pr', 'edit', pr_url, '--body', body)
+        """Replace the description of a PR (REST: `gh pr edit` fails on the sunset Projects classic API)."""
+        number = pr_url.rstrip('/').rsplit('/', 1)[-1]
+        self._out(repo, 'api', '--method', 'PATCH', f'repos/{{owner}}/{{repo}}/pulls/{number}', '-f', f'body={body}')
 
     def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
         """Whether a PR is a draft."""
