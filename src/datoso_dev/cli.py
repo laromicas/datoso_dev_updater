@@ -27,8 +27,10 @@ from datoso_dev.io.git import Git
 from datoso_dev.io.pypi import PyPI
 from datoso_dev.pipeline import DONE, Waits, commit_pointers, release_batch, update_core_extras
 from datoso_dev.planner import Plan, PlanError, plan_release, released_version
+from datoso_dev.pointers import commit_pointers as commit_workspace_pointers
+from datoso_dev.pointers import plan_pointers, workspace_blocker
 from datoso_dev.policy import violations
-from datoso_dev.ports import GhError, GhPort, GitPort, PyPIPort
+from datoso_dev.ports import GhError, GhPort, GitError, GitPort, PyPIPort
 from datoso_dev.pr import (
     PrAction,
     PrItem,
@@ -54,6 +56,7 @@ from datoso_dev.ui import (
     ci_sync_table,
     deps_table,
     plan_table,
+    pointers_table,
     pr_table,
     print_pr_urls,
     print_status,
@@ -457,7 +460,54 @@ def prs_command(
             synced = sync_all(merged, make_git())
         console.print(sync_table(synced, dry_run=False))
         errors += [str(result.path) for result in synced if result.outcome is Outcome.ERROR]
+        console.print('Next: `datoso-dev release`, or `datoso-dev pointers` for repos that are not released.')
     if errors or any(item.error or item.blocker for item in results):
+        raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- pointers
+
+
+@app.command('pointers')
+def pointers_command(
+    workspace: WorkspaceOpt = None,
+    dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the moved pointers and stop.')] = False,
+    yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
+) -> None:
+    """Update the workspace's recorded submodule pointers to their repos' current commit, then push.
+
+    Only pointers whose repo is clean, on master and pushed are updated, so the workspace never points at local-only
+    or unmerged commits. It never adds anything: a submodule not recorded yet, untracked files and other changes are
+    left alone (add those by hand).
+    """
+    ws = resolve_workspace(workspace)
+    git = make_git()
+    with console.status('Checking submodules…', spinner='dots'):
+        try:
+            git.fetch(ws.root)
+            pointers = plan_pointers(ws, git)
+            blocked = workspace_blocker(ws, git)
+        except GitError as exc:
+            _fail(str(exc), 1)
+    if not pointers:
+        console.print('[green]Every submodule pointer is committed.[/]')
+        return
+    console.print(pointers_table(pointers, title='pointers (dry run — nothing changed)' if dry_run else 'pointers'))
+    ready = [pointer for pointer in pointers if not pointer.blocker]
+    if blocked:
+        _fail(blocked, 1)
+    if dry_run or not ready:
+        if not ready:
+            console.print('[yellow]No pointer can be committed yet.[/]')
+        raise typer.Exit(0 if dry_run or len(ready) == len(pointers) else 1)
+    if not yes:
+        typer.confirm(f'Commit and push {len(ready)} pointer(s)?', abort=True)
+    try:
+        message = commit_workspace_pointers(ws, git, ready)
+    except GitError as exc:
+        _fail(str(exc), 1)
+    console.print(f'[green]Committed and pushed:[/] {message.splitlines()[0]}', highlight=False)
+    if len(ready) < len(pointers):
         raise typer.Exit(1)
 
 

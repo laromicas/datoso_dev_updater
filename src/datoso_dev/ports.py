@@ -64,6 +64,9 @@ class GitPort(Protocol):
     def push(self, repo: Path, branch: str, *, force: bool = False) -> None:
         """Push ``branch`` to ``origin`` and set its upstream."""
 
+    def committed_pointer(self, repo: Path, path: str) -> str | None:
+        """Commit the repo's ``HEAD`` records for the submodule at ``path`` (``None`` if it records none)."""
+
     def rev_parse(self, repo: Path, ref: str) -> str:
         """Commit SHA of ``ref`` (e.g. ``origin/master``)."""
 
