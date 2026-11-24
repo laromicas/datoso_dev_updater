@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from datoso_dev.ports import Checks, GhError, PrInfo
+from datoso_dev.ports import Checks, GhError, PrInfo, WorkflowRun
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 PENDING_EXIT = 8  # gh pr checks: some checks are still running
@@ -91,6 +91,15 @@ class Gh:
             )
             for pr in json.loads(out or '[]')
         ]  # fmt: skip
+
+    def workflow_run(self, repo: Path, workflow: str, ref: str) -> WorkflowRun | None:
+        """Latest run of ``workflow`` for ``ref`` (release runs are listed under their tag), or ``None``."""
+        fields = 'status,conclusion,url'
+        out = self._out(repo, 'run', 'list', '--workflow', workflow, '--branch', ref, '--limit', '1', '--json', fields)
+        runs = json.loads(out or '[]')
+        if not runs:
+            return None
+        return WorkflowRun(runs[0]['status'], runs[0].get('conclusion') or '', runs[0].get('url') or '')
 
     def current_user(self, repo: Path) -> str:
         """Login of the account ``gh`` is authenticated as."""

@@ -190,3 +190,20 @@ def test_current_user(tmp_path: Path):
     run = Runner(stdout='laromicas\n')
     assert Gh(runner=run).current_user(tmp_path) == 'laromicas'
     assert run.calls[0][0] == ['gh', 'api', 'user', '--jq', '.login']
+
+
+def test_workflow_run_for_a_tag(tmp_path: Path):
+    run = Runner(stdout='[{"status": "completed", "conclusion": "success", "url": "https://x/runs/1"}]')
+    result = Gh(runner=run).workflow_run(tmp_path, 'python-publish.yml', 'v1.3.0')
+    assert (result.status, result.conclusion, result.url) == ('completed', 'success', 'https://x/runs/1')
+    assert run.calls[0][0][1:9] == [
+        'run',
+        'list',
+        '--workflow',
+        'python-publish.yml',
+        '--branch',
+        'v1.3.0',
+        '--limit',
+        '1',
+    ]
+    assert Gh(runner=Runner(stdout='[]')).workflow_run(tmp_path, 'python-publish.yml', 'v9') is None

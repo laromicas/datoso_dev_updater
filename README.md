@@ -17,7 +17,8 @@ uv tool install -e ./datoso_dev_updater      # from the workspace root; puts `da
 
 ```bash
 datoso-dev status              # dashboard: version, last tag, PyPI, unreleased commits, branch, issues
-datoso-dev status --offline    # no git fetch, no PyPI queries
+                               # (a tag ahead of PyPI checks its publish run: running/done is a note, failed an issue)
+datoso-dev status --offline    # no git fetch, no PyPI / GitHub queries
 datoso-dev status --json       # machine-readable
 datoso-dev sync --dry-run      # fetch all repos and show what would change
 datoso-dev sync                # switch clean repos to master and pull --rebase (dirty repos are skipped)
