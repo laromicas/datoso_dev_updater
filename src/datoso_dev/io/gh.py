@@ -41,10 +41,27 @@ class Gh:
         url = self._out(repo, 'pr', 'list', '--head', head, '--state', state, '--json', 'url', '--jq', '.[0].url // ""')
         return url or None
 
-    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
-        """Open a PR and return its URL (the last line gh prints)."""
-        out = self._out(repo, 'pr', 'create', '--base', base, '--head', head, '--title', title, '--body', body)
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str, draft: bool = False) -> str:  # noqa: PLR0913
+        """Open a PR (a draft when ``draft``) and return its URL (the last line gh prints)."""
+        args = ['pr', 'create', '--base', base, '--head', head, '--title', title, '--body', body]
+        out = self._out(repo, *args, *(['--draft'] if draft else []))
         return out.splitlines()[-1].strip()
+
+    def pr_body(self, repo: Path, pr_url: str) -> str:
+        """Return the description of a PR."""
+        return self._out(repo, 'pr', 'view', pr_url, '--json', 'body', '--jq', '.body')
+
+    def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
+        """Replace the description of a PR."""
+        self._out(repo, 'pr', 'edit', pr_url, '--body', body)
+
+    def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
+        """Whether a PR is a draft."""
+        return self._out(repo, 'pr', 'view', pr_url, '--json', 'isDraft', '--jq', '.isDraft') == 'true'
+
+    def pr_ready(self, repo: Path, pr_url: str) -> None:
+        """Mark a draft PR ready for review."""
+        self._out(repo, 'pr', 'ready', pr_url)
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as on the base branch."""

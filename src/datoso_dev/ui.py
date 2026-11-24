@@ -11,6 +11,7 @@ from rich.text import Text
 from datoso_dev.ci import CiOutcome, CiResult, CiStatus
 from datoso_dev.planner import Plan
 from datoso_dev.policy import FloorChange
+from datoso_dev.pr import PrAction, PrItem
 from datoso_dev.release import Action, Probe, ReleaseResult
 from datoso_dev.release import Outcome as ReleaseOutcome
 from datoso_dev.state import PackageState, Status
@@ -41,6 +42,15 @@ CI_OUTCOME_STYLE = {
     CiOutcome.SKIPPED: 'yellow',
     CiOutcome.ERROR: 'bold red',
 }
+
+PR_STYLE = {
+    PrAction.OPEN: 'cyan',
+    PrAction.UPDATE: 'cyan',
+    PrAction.UP_TO_DATE: 'green',
+    PrAction.SKIPPED: 'yellow',
+    PrAction.ERROR: 'bold red',
+}
+_pr_done = {PrAction.OPEN: 'PR opened', PrAction.UPDATE: 'PR updated'}
 
 _planned = {CiOutcome.OPENED: 'will open PR', CiOutcome.UPDATED: 'will update PR'}
 
@@ -222,4 +232,26 @@ def deps_table(found: dict[str, list[FloorChange]]) -> Table:
     table.add_column('Floor')
     for name, changes in found.items():
         table.add_row(name, Text('\n'.join(floor_text(c) for c in changes)))
+    return table
+
+
+def pr_table(items: list[PrItem], *, title: str) -> Table:
+    """Table of ``pr`` plans or outcomes, one row per repository on a feature branch."""
+    table = Table(title=title, title_justify='left', header_style='bold')
+    table.add_column('Package', no_wrap=True)
+    table.add_column('Branch')
+    table.add_column('Commits', justify='right')
+    table.add_column('Action', no_wrap=True)
+    table.add_column('Detail')
+    table.add_column('PR', overflow='fold', min_width=20)
+    for item in items:
+        label = _pr_done.get(item.action, str(item.action)) if item.done else str(item.action)
+        table.add_row(
+            item.package.name,
+            item.branch,
+            str(len(item.commits)) if item.commits else '',
+            Text(label, style=PR_STYLE[item.action]),
+            item.detail,
+            item.pr_url or '',
+        )
     return table

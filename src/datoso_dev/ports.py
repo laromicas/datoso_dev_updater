@@ -76,8 +76,20 @@ class GhPort(Protocol):
     def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
         """URL of the PR in ``state`` (``open``, ``merged``) whose head is ``head``, or ``None``."""
 
-    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
-        """Open a PR and return its URL."""
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str, draft: bool = False) -> str:  # noqa: PLR0913
+        """Open a PR (a draft when ``draft``) and return its URL."""
+
+    def pr_body(self, repo: Path, pr_url: str) -> str:
+        """Return the description of a PR."""
+
+    def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
+        """Replace the description of a PR."""
+
+    def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
+        """Whether a PR is a draft."""
+
+    def pr_ready(self, repo: Path, pr_url: str) -> None:
+        """Mark a draft PR ready for review."""
 
     def pr_merge_commit(self, repo: Path, pr_url: str) -> str:
         """SHA of the commit a merged PR landed as."""

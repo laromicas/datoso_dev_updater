@@ -29,6 +29,7 @@ from datoso_dev.pipeline import DONE, Waits, commit_pointers, release_batch, upd
 from datoso_dev.planner import Plan, PlanError, plan_release, released_version
 from datoso_dev.policy import violations
 from datoso_dev.ports import GhError, GhPort, GitPort, PyPIPort
+from datoso_dev.pr import PrAction, PrItem, PrText, default_title, editor_template, parse_template, plan_prs, run_prs
 from datoso_dev.prompts import Option, Prompter, QuestionaryPrompter
 from datoso_dev.pyproject import set_floor, set_init_version, set_project_version
 from datoso_dev.release import Action, Probe, ReleaseResult, probe_releases, run_releases
@@ -41,6 +42,7 @@ from datoso_dev.ui import (
     ci_sync_table,
     deps_table,
     plan_table,
+    pr_table,
     print_pr_urls,
     print_status,
     release_results_table,
@@ -263,6 +265,83 @@ def ci_sync_command(  # noqa: PLR0913, PLR0917
     console.print(ci_sync_table(results, title='ci sync'))
     print_pr_urls(console, results)
     if errors or any(r.outcome is CiOutcome.ERROR for r in results):
+        raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- pr
+
+
+def _pr_text(todo: list[PrItem], title: str | None, body: str, *, yes: bool) -> PrText | None:
+    """Title and description for new PRs: from --title, else from the editor (``None``: no new PR)."""
+    if title:
+        return PrText(title, body)
+    if not any(item.action is PrAction.OPEN for item in todo):
+        return None
+    if yes or not is_interactive():
+        _fail('--title is needed to open new PRs without a terminal.')
+    text = _edit_pr_text(editor_template(todo, default_title(todo)))
+    if text is None:
+        _fail('Cancelled: empty title.', 1)
+    return text
+
+
+def _edit_pr_text(template: str) -> PrText | None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'PULL_REQUEST.md'
+        path.write_text(template, encoding='utf-8')
+        try:
+            run_editor(path)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            _fail(f'editor failed: {exc}', 1)
+        return parse_template(path.read_text(encoding='utf-8'))
+
+
+@app.command('pr')
+def pr_command(  # noqa: PLR0913, PLR0917
+    packages: Annotated[
+        list[str] | None,
+        typer.Argument(help='Only these packages (short names ok). Default: every repo on a feature branch.'),
+    ] = None,
+    workspace: WorkspaceOpt = None,
+    title: Annotated[str | None, typer.Option(help='Title of new PRs (skips the editor).')] = None,
+    body: Annotated[str, typer.Option(help='Description of new PRs, with --title.')] = '',
+    dry_run: Annotated[bool, typer.Option('--dry-run', help='Show the plan and stop.')] = False,
+    yes: Annotated[bool, typer.Option('--yes', '-y', help='Do not ask for confirmation.')] = False,
+) -> None:
+    """Push committed feature branches and open or update one PR per repo, linked to each other.
+
+    Never commits: repos with uncommitted changes are skipped. New PRs are drafts while a datoso>= floor they need is
+    not on PyPI; a later run marks them ready. The title and description (shared, plus a note per repo) are written in
+    your editor unless --title is given.
+    """
+    ws = resolve_workspace(workspace)
+    try:
+        targets = [ws.packages[resolve_name(ws, name)] for name in packages] if packages else ws.packages.values()
+    except WorkspaceError as exc:
+        _fail(str(exc))
+    git, gh, pypi = make_git(), make_gh(), make_pypi()
+    with console.status('Checking repositories…', spinner='dots'):
+        items = plan_prs(ws, targets, git, gh, pypi)
+    if not items:
+        console.print('[green]No feature branches with commits to propose.[/]')
+        return
+    todo = [item for item in items if item.actionable]
+    errors = any(item.action is PrAction.ERROR for item in items)
+    console.print(pr_table(items, title='pr (dry run — nothing changed)' if dry_run else 'pr — plan'))
+    if dry_run or not todo:
+        if not todo:
+            console.print('[green]Nothing to push or open.[/]')
+        raise typer.Exit(1 if errors else 0)
+    text = _pr_text(todo, title, body, yes=yes)
+    if not yes:
+        typer.confirm(f'Push and open or update {len(todo)} PR(s)?', abort=True)
+    with console.status('Pushing and opening pull requests…', spinner='dots'):
+        results, link_errors = run_prs(items, git, gh, text)
+    console.print(pr_table(results, title='pr'))
+    _print_links(item.pr_url for item in results)
+    for error in link_errors:
+        console.print(f'[yellow]Could not link:[/] {error}', highlight=False)
+    if errors or any(item.action is PrAction.ERROR for item in results):
         raise typer.Exit(1)
 
 

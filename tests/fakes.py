@@ -128,18 +128,45 @@ class FakeGh:
         self.fail_merge = False
         self.created: list[dict[str, object]] = []
         self.fail = fail
+        self.bodies: dict[str, str] = {}  # PR URL -> description
+        self.drafts: set[str] = set()
+        self.edited: list[str] = []
+        self.readied: list[str] = []
+        self.fail_body = False
 
     def pr_for_branch(self, repo: Path, head: str, *, state: str = 'open') -> str | None:
         return (self.open_prs if state == 'open' else self.merged_prs).get((repo, head))
 
-    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str) -> str:
+    def pr_create(self, repo: Path, *, base: str, head: str, title: str, body: str, draft: bool = False) -> str:  # noqa: PLR0913
         if self.fail:
             msg = f'gh pr create failed in {repo}'
             raise GhError(msg)
         url = f'https://github.com/owner/{repo.name}/pull/{len(self.created) + 1}'
-        self.created.append({'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url})
+        self.created.append(
+            {'repo': repo, 'base': base, 'head': head, 'title': title, 'body': body, 'url': url, 'draft': draft}
+        )
         self.open_prs[(repo, head)] = url
+        self.bodies[url] = body
+        if draft:
+            self.drafts.add(url)
         return url
+
+    def pr_body(self, repo: Path, pr_url: str) -> str:
+        if self.fail_body:
+            msg = f'gh pr view failed in {repo}'
+            raise GhError(msg)
+        return self.bodies.get(pr_url, '')
+
+    def pr_edit_body(self, repo: Path, pr_url: str, body: str) -> None:
+        self.bodies[pr_url] = body
+        self.edited.append(pr_url)
+
+    def pr_is_draft(self, repo: Path, pr_url: str) -> bool:
+        return pr_url in self.drafts
+
+    def pr_ready(self, repo: Path, pr_url: str) -> None:
+        self.drafts.discard(pr_url)
+        self.readied.append(pr_url)
 
     def pr_checks(self, repo: Path, pr_url: str) -> tuple[Checks, str]:
         states = self.checks.get(pr_url, [(Checks.PASSED, '')])

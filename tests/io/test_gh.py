@@ -130,3 +130,25 @@ def test_release_notes_and_edit(tmp_path: Path):
     notes = tmp_path / 'notes.md'
     Gh(runner=run).release_edit_notes(tmp_path, 'v1.1.0', notes)
     assert run.calls[1][0] == ['gh', 'release', 'edit', 'v1.1.0', '--notes-file', str(notes)]
+
+
+def test_pr_create_draft(tmp_path: Path):
+    run = Runner(stdout='https://github.com/o/r/pull/5\n')
+    Gh(runner=run).pr_create(tmp_path, base='master', head='b', title='T', body='B', draft=True)
+    assert run.calls[0][0][-1] == '--draft'
+
+
+def test_pr_body_edit_draft_and_ready(tmp_path: Path):
+    url = 'https://github.com/o/r/pull/5'
+    run = Runner(stdout='true\n')
+    gh = Gh(runner=run)
+    assert gh.pr_is_draft(tmp_path, url) is True
+    assert gh.pr_body(tmp_path, url) == 'true'
+    gh.pr_edit_body(tmp_path, url, 'New')
+    gh.pr_ready(tmp_path, url)
+    assert [argv[1:] for argv, _ in run.calls] == [
+        ['pr', 'view', url, '--json', 'isDraft', '--jq', '.isDraft'],
+        ['pr', 'view', url, '--json', 'body', '--jq', '.body'],
+        ['pr', 'edit', url, '--body', 'New'],
+        ['pr', 'ready', url],
+    ]
